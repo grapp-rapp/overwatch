@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>char test</title>
+<style>html,body{margin:0;height:100%;background:#14181a;overflow:hidden}
+canvas{display:block;width:100%;height:100%}
+#i{position:fixed;left:8px;top:8px;color:#9f9;font:12px monospace;white-space:pre;z-index:9;text-shadow:0 0 4px #000}</style>
+<script type="importmap">{"imports":{"three":"../assets/lib/three.module.js","three/addons/":"../assets/lib/addons/"}}</script>
+</head><body>
+<canvas id="c"></canvas><div id="i">loading…</div>
+<script type="module">
+import * as THREE from 'three';
+import { loadCharacterAssets, Character } from '../src/chars/characters.js';
+import { WEAPONS } from '../src/weapons/defs.js';
+
+const info = document.getElementById('i');
+const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('c'), antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(1);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x2b3237);
+const cam = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.05, 100);
+
+scene.add(new THREE.HemisphereLight(0xbcd6ff, 0x4a4034, 1.6));
+const sun = new THREE.DirectionalLight(0xfff0dd, 2.6);
+sun.position.set(4, 8, 5); sun.castShadow = true;
+sun.shadow.mapSize.set(1024, 1024);
+sun.shadow.camera.left = -6; sun.shadow.camera.right = 6;
+sun.shadow.camera.top = 6; sun.shadow.camera.bottom = -6;
+sun.shadow.bias = -0.0012;
+scene.add(sun);
+
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(40, 40),
+  new THREE.MeshStandardMaterial({ color: 0x6a6257, roughness: 1 }));
+ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
+const grid = new THREE.GridHelper(20, 40, 0x445, 0x334); grid.position.y = 0.002; scene.add(grid);
+
+// 1.8m reference pole
+const pole = new THREE.Mesh(new THREE.BoxGeometry(0.04, 1.8, 0.04),
+  new THREE.MeshBasicMaterial({ color: 0xff4444 }));
+pole.position.set(-1.6, 0.9, 0); scene.add(pole);
+
+await loadCharacterAssets();
+
+const guns = ['vk71','longbow','wasp45','hammer','breacher12','m9'];
+const chars = [];
+for (let i = 0; i < 3; i++) {
+  const c = new Character({ team: i === 0 ? 'A' : 'B', variant: i, seed: i + 1, name: 'T' + i });
+  c.setWeapon(WEAPONS[guns[i % guns.length]]);
+  c.pos.set(i * 1.6 - 1.6, 0, 0);
+  scene.add(c.root);
+  chars.push(c);
+}
+
+let t = 0, mode = 0;
+const modes = [
+  { n: 'IDLE',        spd: 0,   crouch: 0, aim: 0 },
+  { n: 'WALK FWD',    spd: 1.4, crouch: 0, aim: 0 },
+  { n: 'RUN FWD',     spd: 4.3, crouch: 0, aim: 0 },
+  { n: 'STRAFE R',    spd: 3.2, crouch: 0, aim: 0, strafe: Math.PI / 2 },
+  { n: 'CROUCH WALK', spd: 1.2, crouch: 1, aim: 1 },
+  { n: 'ADS IDLE',    spd: 0,   crouch: 0, aim: 1 },
+];
+addEventListener('keydown', e => { if (e.code === 'Space') mode = (mode + 1) % modes.length; });
+
+let orbit = true, camAngle = 0;
+addEventListener('keydown', e => {
+  if (e.code === 'KeyO') orbit = !orbit;
+  if (e.code === 'KeyF') { orbit = false; camAngle = 0; }        // front
+  if (e.code === 'KeyL') { orbit = false; camAngle = Math.PI / 2; } // side
+  if (e.code === 'KeyK') { orbit = false; camAngle = Math.PI; }   // back
+});
+
+const clock = new THREE.Clock();
+let frames = 0, acc = 0, lastErr = '';
+function loop() {
+  requestAnimationFrame(loop);
+  try { step(); } catch (e) { lastErr = e.message; info.textContent = 'ERR ' + e.stack.split('\n').slice(0,3).join('\n'); }
+}
+function step() {
+  const dt = Math.min(0.05, clock.getDelta());
+  t += dt; acc += dt; frames++;
+  const m = modes[mode];
+  for (let i = 0; i < chars.length; i++) {
+    const c = chars[i];
+    const dir = (m.strafe || 0);
+    c.aimYaw = window.__fixAim !== undefined ? window.__fixAim : Math.sin(t * 0.35 + i) * 0.9;
+    c.aimPitch = window.__fixPitch !== undefined ? window.__fixPitch : Math.sin(t * 0.5 + i) * 0.24;
+    const my = c.aimYaw + dir;
+    c.vel.set(Math.sin(my) * m.spd, 0, Math.cos(my) * m.spd);
+    c.crouch = m.crouch;
+    c.aimW = m.aim;
+    c.groundY = 0;
+    c.update(dt, cam.position);
+  }
+  const r = window.__camR || 3.6, a = orbit ? t * 0.16 : camAngle;
+  const fx = window.__camFocus || [0, 1.15, 0];
+  cam.position.set(fx[0] + Math.sin(a) * r, (window.__camY ?? 1.45), fx[2] + Math.cos(a) * r);
+  cam.lookAt(fx[0], fx[1], fx[2]);
+  renderer.render(scene, cam);
+  if (acc > 0.4) {
+    const c0 = chars[0];
+    const V = THREE.Vector3;
+    const head = c0.bone('Head').getWorldPosition(new V());
+    const foot = c0.bone('LeftFoot').getWorldPosition(new V());
+    const muz = c0.muzzle ? c0.muzzle.getWorldPosition(new V()) : new V();
+    const grip = c0.weaponModel ? c0.weaponModel.getWorldPosition(new V()) : new V();
+    const gl = new V(); if (c0.weaponModel) c0.weaponModel.getWorldScale(gl);
+    info.textContent = `[SPACE] mode ${m.n}  [O]rbit [F]ront [L]side [K]back\n`
+      + `fps ${(frames / acc).toFixed(0)}  err:${lastErr || '-'}\n`
+      + `head Y ${head.y.toFixed(3)}  foot Y ${foot.y.toFixed(3)}\n`
+      + `gunScale ${gl.x.toFixed(3)}  gripW ${grip.toArray().map(v=>v.toFixed(2))}\n`
+      + `muzzle ${muz.toArray().map(v=>v.toFixed(2))}  |gun| ${grip.distanceTo(muz).toFixed(2)}m\n`
+      + `speed ${c0.speed.toFixed(2)}  bodyYaw ${c0.bodyYaw.toFixed(2)} aimYaw ${c0.aimYaw.toFixed(2)}`;
+    frames = 0; acc = 0; lastErr = '';
+  }
+}
+loop();
+addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); cam.aspect = innerWidth / innerHeight; cam.updateProjectionMatrix(); });
+window.__chars = chars; window.__THREE = THREE; window.__scene = scene; window.__cam = cam;
+const CM = await import('../src/chars/characters.js');
+window.__setGrip = (o) => { Object.assign(CM.GRIP, o); chars.forEach(c => c.recalcGrip()); };
+window.__GRIP = CM.GRIP;
+window.__setMode = (i) => { mode = i; };
+window.__setCam = (a) => { orbit = false; camAngle = a; };
+</script></body></html>

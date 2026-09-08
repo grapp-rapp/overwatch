@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>OVERWATCH: BLACKOUT — Tactical FPS</title>
+<link rel="stylesheet" href="./src/ui/style.css" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%230b0f0d'/><circle cx='16' cy='16' r='9' fill='none' stroke='%237ee787' stroke-width='2'/><path d='M16 3v7M16 22v7M3 16h7M22 16h7' stroke='%237ee787' stroke-width='2'/></svg>" />
+<script type="importmap">
+{
+  "imports": {
+    "three": "./assets/lib/three.module.js",
+    "three/addons/": "./assets/lib/addons/"
+  }
+}
+</script>
+</head>
+<body>
+
+<canvas id="gl"></canvas>
+
+<!-- ============================== BOOT / LOADING ============================== -->
+<div id="boot" class="screen">
+  <div class="boot-inner">
+    <div class="brandmark">
+      <svg viewBox="0 0 64 64" class="bm-svg" aria-hidden="true">
+        <circle cx="32" cy="32" r="20" fill="none" stroke="currentColor" stroke-width="2"/>
+        <circle cx="32" cy="32" r="3" fill="currentColor"/>
+        <path d="M32 4v14M32 46v14M4 32h14M46 32h14" stroke="currentColor" stroke-width="2"/>
+      </svg>
+    </div>
+    <h1 class="title">OVERWATCH<span class="title-sub">BLACKOUT</span></h1>
+    <div class="boot-bar"><div id="bootFill" class="boot-fill"></div></div>
+    <div id="bootMsg" class="boot-msg">ESTABLISHING UPLINK…</div>
+  </div>
+</div>
+
+<!-- ============================== PRE-MATCH / LOADOUT ============================== -->
+<div id="menu" class="screen hidden">
+  <div class="menu-grid">
+
+    <!-- ---- Header ---- -->
+    <header class="menu-head">
+      <div class="mh-left">
+        <span class="mh-logo">OVERWATCH<b>BLACKOUT</b></span>
+        <span class="mh-op">OPERATION <b id="opName">DUSTLINE</b></span>
+      </div>
+      <nav class="mh-tabs" id="tabs">
+        <button class="tab active" data-tab="briefing">BRIEFING</button>
+        <button class="tab" data-tab="primary">PRIMARY</button>
+        <button class="tab" data-tab="loadout">LOADOUT</button>
+        <button class="tab" data-tab="controls">CONTROLS</button>
+      </nav>
+      <div class="mh-right">
+        <button id="deployBtn" class="deploy">DEPLOY <span class="dep-key">↵</span></button>
+      </div>
+    </header>
+
+    <!-- ---- BRIEFING: tactical map + match config ---- -->
+    <section class="pane active" data-pane="briefing">
+      <div class="briefing">
+        <div class="panel map-panel">
+          <div class="panel-hd"><h2>TACTICAL OVERVIEW</h2><span class="pill">MP_DUSTLINE · 62×46m</span></div>
+          <div class="tacmap-wrap">
+            <canvas id="tacmap" width="760" height="560"></canvas>
+            <div class="tacmap-legend">
+              <span><i class="sw a"></i>ALLIED SPAWN</span>
+              <span><i class="sw b"></i>HOSTILE SPAWN</span>
+              <span><i class="sw c"></i>STRUCTURE</span>
+              <span><i class="sw d"></i>HARD COVER</span>
+              <span><i class="sw e"></i>ELEVATED</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel cfg-panel">
+          <div class="panel-hd"><h2>OPERATION PARAMETERS</h2><span class="pill">SOLO · TEAM DEATHMATCH</span></div>
+
+          <div class="cfg">
+            <label class="cfg-row">
+              <span class="cfg-k">HOSTILE COUNT</span>
+              <input type="range" id="cfgEnemies" min="2" max="9" step="1" value="5" />
+              <output id="outEnemies">5</output>
+            </label>
+            <label class="cfg-row">
+              <span class="cfg-k">SCORE LIMIT</span>
+              <input type="range" id="cfgScore" min="10" max="100" step="5" value="30" />
+              <output id="outScore">30</output>
+            </label>
+            <label class="cfg-row">
+              <span class="cfg-k">TIME LIMIT</span>
+              <input type="range" id="cfgTime" min="3" max="20" step="1" value="10" />
+              <output id="outTime">10:00</output>
+            </label>
+            <label class="cfg-row">
+              <span class="cfg-k">FRIENDLY AI</span>
+              <input type="range" id="cfgFriends" min="0" max="5" step="1" value="3" />
+              <output id="outFriends">3</output>
+            </label>
+          </div>
+
+          <div class="panel-hd sub"><h3>DIFFICULTY</h3></div>
+          <div class="diff" id="diffSel">
+            <button class="diff-b" data-diff="0"><b>RECRUIT</b><i>Hostiles react slowly, aim loosely.</i></button>
+            <button class="diff-b active" data-diff="1"><b>REGULAR</b><i>Balanced engagement. Recommended.</i></button>
+            <button class="diff-b" data-diff="2"><b>HARDENED</b><i>Fast reactions, uses cover well.</i></button>
+            <button class="diff-b" data-diff="3"><b>VETERAN</b><i>Lethal. Flanks, leads shots, punishes.</i></button>
+          </div>
+
+          <div class="panel-hd sub"><h3>KILLSTREAKS</h3></div>
+          <ul class="streaks" id="streakList"></ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---- PRIMARY: weapon grid ---- -->
+    <section class="pane" data-pane="primary">
+      <div class="armory">
+        <div class="panel gun-grid-panel">
+          <div class="panel-hd"><h2>PRIMARY WEAPONS</h2><span class="pill" id="gunCount"></span></div>
+          <div class="gun-grid" id="gunGrid"></div>
+        </div>
+        <div class="panel gun-detail-panel">
+          <div class="panel-hd"><h2 id="gdName">—</h2><span class="pill" id="gdClass"></span></div>
+          <canvas id="gunRender" width="640" height="300"></canvas>
+          <div class="gd-stats" id="gdStats"></div>
+          <div class="gd-desc" id="gdDesc"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---- LOADOUT: primary + secondary + lethal ---- -->
+    <section class="pane" data-pane="loadout">
+      <div class="loadout">
+        <div class="panel">
+          <div class="panel-hd"><h2>CUSTOM LOADOUT</h2><span class="pill">CLASS 01 · OPERATOR</span></div>
+          <div class="lo-slots">
+            <div class="lo-slot" data-slot="primary">
+              <div class="lo-k">PRIMARY</div>
+              <canvas class="lo-canvas" data-slot="primary" width="420" height="150"></canvas>
+              <div class="lo-name" id="loPrimary">—</div>
+              <div class="lo-picker" id="pickPrimary"></div>
+            </div>
+            <div class="lo-slot" data-slot="secondary">
+              <div class="lo-k">SECONDARY</div>
+              <canvas class="lo-canvas" data-slot="secondary" width="420" height="150"></canvas>
+              <div class="lo-name" id="loSecondary">—</div>
+              <div class="lo-picker" id="pickSecondary"></div>
+            </div>
+            <div class="lo-slot" data-slot="lethal">
+              <div class="lo-k">LETHAL</div>
+              <canvas class="lo-canvas" data-slot="lethal" width="420" height="150"></canvas>
+              <div class="lo-name" id="loLethal">—</div>
+              <div class="lo-picker" id="pickLethal"></div>
+            </div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-hd"><h2>LOADOUT PROFILE</h2><span class="pill">AGGREGATE</span></div>
+          <div class="bars" id="loBars"></div>
+          <div class="panel-hd sub"><h3>SUMMARY</h3></div>
+          <div class="lo-summary" id="loSummary"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---- CONTROLS ---- -->
+    <section class="pane" data-pane="controls">
+      <div class="controls">
+        <div class="panel">
+          <div class="panel-hd"><h2>CONTROL LEGEND</h2><span class="pill">KEYBOARD &amp; MOUSE</span></div>
+          <div class="keys" id="keyList"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-hd"><h2>INPUT DEVICE</h2><span class="pill">POINTER PROFILE</span></div>
+          <div class="devsel" id="devSel">
+            <button class="dev-b active" data-dev="mouse">
+              <svg viewBox="0 0 40 60" class="dev-ic"><rect x="6" y="2" width="28" height="56" rx="14" fill="none" stroke="currentColor" stroke-width="2.5"/><path d="M20 4v18" stroke="currentColor" stroke-width="2.5"/><path d="M6 22h28" stroke="currentColor" stroke-width="2.5"/></svg>
+              <b>MOUSE</b><i>Raw 1:1 movement. No smoothing. Full sensitivity range.</i>
+            </button>
+            <button class="dev-b" data-dev="trackpad">
+              <svg viewBox="0 0 60 44" class="dev-ic"><rect x="3" y="3" width="54" height="38" rx="5" fill="none" stroke="currentColor" stroke-width="2.5"/><path d="M3 31h54" stroke="currentColor" stroke-width="2.5"/></svg>
+              <b>TRACKPAD</b><i>Acceleration curve + smoothing for short swipes.</i>
+            </button>
+          </div>
+          <div class="panel-hd sub"><h3>SENSITIVITY</h3></div>
+          <div class="cfg">
+            <label class="cfg-row"><span class="cfg-k">LOOK</span><input type="range" id="cfgSens" min="10" max="300" step="5" value="100"/><output id="outSens">1.00</output></label>
+            <label class="cfg-row"><span class="cfg-k">ADS MULT</span><input type="range" id="cfgAds" min="30" max="150" step="5" value="75"/><output id="outAds">0.75</output></label>
+            <label class="cfg-row"><span class="cfg-k">FOV</span><input type="range" id="cfgFov" min="65" max="110" step="1" value="85"/><output id="outFov">85°</output></label>
+            <label class="cfg-row"><span class="cfg-k">MASTER VOL</span><input type="range" id="cfgVol" min="0" max="100" step="1" value="70"/><output id="outVol">70%</output></label>
+          </div>
+          <div class="panel-hd sub"><h3>INVERT / TOGGLES</h3></div>
+          <div class="toggles" id="toggles">
+            <label class="tg"><input type="checkbox" id="tgInvert"><span></span>INVERT PITCH</label>
+            <label class="tg"><input type="checkbox" id="tgHoldAds" checked><span></span>HOLD TO ADS</label>
+            <label class="tg"><input type="checkbox" id="tgHoldSprint" checked><span></span>HOLD TO SPRINT</label>
+            <label class="tg"><input type="checkbox" id="tgShadows" checked><span></span>SHADOWS</label>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<!-- ============================== HUD ============================== -->
+<div id="hud" class="hidden">
+
+  <!-- crosshair + hitmarker -->
+  <div id="reticle"><svg viewBox="-50 -50 100 100" id="reticleSvg"></svg></div>
+  <div id="hitmarker"><svg viewBox="-20 -20 40 40"><path d="M-14-14L-6-6M14-14L6-6M-14 14L-6 6M14 14L6 6" stroke-width="2.6" fill="none" stroke-linecap="round"/></svg></div>
+
+  <!-- top bar: score + timer -->
+  <div id="topbar">
+    <div class="tb-team a"><span class="tb-tag">ALLIED</span><span class="tb-score" id="scoreA">0</span></div>
+    <div class="tb-mid"><div class="tb-timer" id="matchTimer">10:00</div><div class="tb-mode" id="matchMode">TEAM DEATHMATCH · 30</div></div>
+    <div class="tb-team b"><span class="tb-score" id="scoreB">0</span><span class="tb-tag">HOSTILE</span></div>
+  </div>
+
+  <!-- compass -->
+  <div id="compass"><canvas id="compassCv" width="1100" height="34"></canvas></div>
+
+  <!-- minimap -->
+  <div id="minimap"><canvas id="minimapCv" width="340" height="340"></canvas>
+    <div class="mm-frame"></div><div class="mm-uav" id="mmUav">UAV</div>
+  </div>
+
+  <!-- killfeed -->
+  <div id="killfeed"></div>
+
+  <!-- bottom-left: health + stance -->
+  <div id="vitals">
+    <div class="v-health"><div class="vh-bar"><div id="healthFill"></div></div><div class="vh-num" id="healthNum">100</div></div>
+    <div class="v-row"><div class="stance" id="stance">STAND</div><div class="plates" id="armor"></div></div>
+  </div>
+
+  <!-- bottom-right: ammo -->
+  <div id="ammo">
+    <div class="am-name" id="wName">—</div>
+    <div class="am-nums"><span class="am-mag" id="wMag">30</span><span class="am-sep">/</span><span class="am-res" id="wRes">120</span></div>
+    <div class="am-fire" id="wFire">AUTO</div>
+    <div class="am-lethal" id="wLethal">FRAG ×2</div>
+  </div>
+
+  <!-- killstreak rail -->
+  <div id="streakRail"></div>
+
+  <!-- damage direction -->
+  <div id="dmgDirs"></div>
+  <div id="hurtVig"></div>
+  <div id="lowHp"></div>
+
+  <!-- scope overlay -->
+  <div id="scope" class="hidden">
+    <svg viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid slice" id="scopeSvg"></svg>
+  </div>
+
+  <!-- centre event banners -->
+  <div id="banner"></div>
+  <div id="streakToast"></div>
+
+  <!-- scoreboard -->
+  <div id="scoreboard" class="hidden"></div>
+
+  <!-- killcam -->
+  <div id="killcam" class="hidden">
+    <div class="kc-top"><div class="kc-label">KILLCAM</div><div class="kc-killer" id="kcKiller">—</div></div>
+    <div class="kc-bars"><div class="kc-bar t"></div><div class="kc-bar b"></div></div>
+    <div class="kc-bottom"><div class="kc-wep" id="kcWep">—</div><div class="kc-skip">RESPAWNING IN <b id="kcCount">5</b> · <span class="kbd">SPACE</span> SKIP</div></div>
+  </div>
+
+  <!-- killstreak select / chopper gunner overlay -->
+  <div id="gunnerHud" class="hidden">
+    <svg viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid slice" id="gunnerSvg"></svg>
+    <div class="gg-top" id="ggTop">CHOPPER GUNNER</div>
+    <div class="gg-bottom"><span id="ggTime">40</span>s · <span id="ggAmmo">∞</span></div>
+  </div>
+
+  <!-- airstrike marker select -->
+  <div id="strikeSel" class="hidden">
+    <canvas id="strikeCv" width="760" height="560"></canvas>
+    <div class="ss-hint">MOVE CURSOR · <span class="kbd">CLICK</span> CONFIRM STRIKE · <span class="kbd">ESC</span> CANCEL</div>
+    <div class="ss-title" id="ssTitle">PRECISION AIRSTRIKE</div>
+  </div>
+
+  <div id="fps"></div>
+</div>
+
+<!-- ============================== PAUSE ============================== -->
+<div id="pause" class="screen hidden">
+  <div class="pause-card">
+    <h2>PAUSED</h2>
+    <div class="pause-stats" id="pauseStats"></div>
+    <div class="pause-btns">
+      <button id="resumeBtn" class="btn primary">RESUME</button>
+      <button id="restartBtn" class="btn">RESTART OPERATION</button>
+      <button id="quitBtn" class="btn ghost">RETURN TO LOADOUT</button>
+    </div>
+    <p class="pause-hint">Click the viewport to re-capture the pointer.</p>
+  </div>
+</div>
+
+<!-- ============================== RESULT ============================== -->
+<div id="result" class="screen hidden">
+  <div class="res-wrap">
+    <div class="res-verdict" id="resVerdict">VICTORY</div>
+    <div class="res-line" id="resLine">ALLIED FORCES 30 — 24 HOSTILE</div>
+    <div class="res-board" id="resBoard"></div>
+    <div class="res-stats" id="resStats"></div>
+    <div class="res-btns">
+      <button id="againBtn" class="btn primary">PLAY AGAIN</button>
+      <button id="menuBtn" class="btn">LOADOUT</button>
+    </div>
+  </div>
+</div>
+
+<div id="clickToPlay" class="hidden"><div class="ctp-inner"><div class="ctp-ic">◎</div>CLICK TO CAPTURE POINTER</div></div>
+
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>

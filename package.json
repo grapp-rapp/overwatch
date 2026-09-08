@@ -1,0 +1,13 @@
+{
+  "name": "overwatch-blackout",
+  "version": "1.0.0",
+  "description": "A browser tactical FPS built on three.js — rigged soldiers, learnable recoil, killstreaks, killcam.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node tools/serve.mjs",
+    "dev": "node tools/serve.mjs",
+    "check": "node --experimental-vm-modules tools/check.mjs",
+    "qa": "node tools/qa.mjs"
+  }
+}
