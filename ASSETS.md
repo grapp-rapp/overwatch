@@ -39,7 +39,7 @@ it is a file, and none of it derives from third-party artwork.
 
 | Category | Produced by | What is generated |
 |---|---|---|
-| **Surface textures** | `src/world/textures.js` | Asphalt, concrete, plaster, dirt, corrugated metal, wood plank and roof tile. Each is a value-noise/fBm albedo baked to a canvas, with a roughness map and a normal map derived from the same height field by a Sobel filter. |
+| **Surface textures** | `src/world/textures.js` | Asphalt, concrete, plaster, dirt, corrugated metal, wood plank, roof tile, painted container steel and woven hessian. Each is a value-noise/fBm albedo baked to a canvas, with a roughness map and a normal map derived from the same height field by a Sobel filter; the container panel also bakes a metalness map so rust stops answering light like bare steel. Fuel drums reuse the container bake rotated a quarter turn. |
 | **Sky** | `src/world/textures.js` | Equirectangular dusk gradient with fBm cloud layer, used as both background and environment map. |
 | **Sprites and decals** | `src/world/textures.js` | Muzzle-flash star, soft radial blob (contact shadows, smoke), bullet-hole decal with rim and radial cracks. |
 | **All weapon models** | `src/weapons/models.js` | Ten weapons plus three lethals, built from chamfered extrusions, tubes and boxes: receivers, barrels, handguards, rails, optics (iron / red dot / holographic / ACOG / 8× scope), magazines, stocks, muzzle devices, moving bolts and slides. |

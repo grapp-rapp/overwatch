@@ -8,7 +8,7 @@
 import * as THREE from 'three';
 import { PRIMARIES, SECONDARIES, WEAPONS, LETHALS, loadoutBars, stk, ttk } from '../weapons/defs.js';
 import { buildWeapon, buildLethal } from '../weapons/models.js';
-import { STREAKS, STREAK_ICONS } from './killstreaks.js';
+import { STREAKS, STREAK_ICONS, TEAM_STRIKE } from './killstreaks.js';
 import { CONTROL_LEGEND } from '../core/input.js';
 import { MAP_W, MAP_D, HALF_W, HALF_D } from '../world/map.js';
 import { clamp, lerp } from '../core/util.js';
@@ -168,7 +168,11 @@ export class Menu {
       `<li><span class="sk-n">${s.cost}</span>
         <svg class="sk-i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
           stroke-linecap="round" stroke-linejoin="round"><path d="${STREAK_ICONS[s.icon]}"/></svg>
-        <b>${s.name}</b><i>${s.desc}</i></li>`).join('');
+        <b>${s.name}</b><i>${s.desc}</i></li>`).join('') +
+      `<li class="team-asset"><span class="sk-n">${TEAM_STRIKE.key}</span>
+        <svg class="sk-i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+          stroke-linecap="round" stroke-linejoin="round"><path d="${STREAK_ICONS[TEAM_STRIKE.icon]}"/></svg>
+        <b>${TEAM_STRIKE.name}</b><i>${TEAM_STRIKE.desc}</i></li>`;
   }
 
   _buildKeyList() {

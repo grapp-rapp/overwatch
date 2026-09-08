@@ -411,3 +411,33 @@ input[type=range]::-moz-range-thumb{width:13px;height:13px;background:var(--acc)
 ::-webkit-scrollbar-track{background:rgba(255,255,255,.02)}
 ::-webkit-scrollbar-thumb{background:rgba(126,231,135,.2)}
 ::-webkit-scrollbar-thumb:hover{background:rgba(126,231,135,.35)}
+
+/* ---- team airstrike on the killstreak rail --------------------------------
+   Not a streak: it shows a state word instead of a progress bar, and it is
+   pinned apart from the streaks above it so the two never read as one list. */
+#streakRail .sk.team {
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid rgba(150, 180, 165, 0.20);
+}
+#streakRail .sk.team .sk-sub {
+  font: 600 8.5px/1.25 var(--f-mono);
+  letter-spacing: 0.16em;
+  color: rgba(190, 210, 200, 0.45);
+  margin-top: 2px;
+}
+#streakRail .sk.team.ready { color: var(--acc); opacity: 1; }
+#streakRail .sk.team.ready .sk-sub { color: var(--acc); }
+#streakRail .sk.team.spent { opacity: 0.34; }
+#streakRail .sk.team.spent .sk-sub { color: rgba(200, 120, 110, 0.75); }
+
+/* the briefing screen lists it under the streaks, same separation */
+.streaks li.team-asset {
+  margin-top: 8px;
+  padding-top: 9px;
+  border-top: 1px solid rgba(150, 180, 165, 0.18);
+}
+.streaks li.team-asset .sk-n {
+  color: var(--acc);
+  border-color: rgba(126,231,135,.45);
+}

@@ -10,6 +10,8 @@
    Loaded from the page with:  const QA = await import('/tools/qa-browser.js')
    ========================================================================== */
 
+import { underOpenSky } from '../src/weapons/combat.js';
+
 const G = () => window.__game;
 const T = () => window.__THREE;
 
@@ -875,6 +877,94 @@ export async function testControls() {
   };
 }
 
+/* ================================================================ TEST 14 */
+/**
+ * The team airstrike obeys its three rules.
+ *
+ * One per side for the whole match; it never touches the caller's own team;
+ * and it only reaches people standing under open sky. Each of those is a thing
+ * that would break quietly — a friendly-fire regression looks like ordinary
+ * blast damage in a log — so all three are asserted directly.
+ */
+export function testTeamAirstrike() {
+  const g = G(), V = T().Vector3;
+  if (g.state === 'MENU') g.deploy();
+  window.__stepN(60, 1 / 60);
+  const me = g.me;
+  const enemies = g.actors.filter(a => a.team !== me.team);
+  const friends = g.actors.filter(a => a !== me && a.team === me.team);
+  if (enemies.length < 2 || !friends.length) {
+    return { name: 'team airstrike', pass: false, note: 'need 2 hostiles and 1 friendly' };
+  }
+
+  /* A sheltered spot with an exposed one inside a single blast radius of it —
+     the pair is what makes the open-sky rule falsifiable rather than decorative. */
+  let pair = null;
+  for (let x = -28; x <= 28 && !pair; x += 0.5) for (let z = -20; z <= 20; z += 0.5) {
+    const gy = g.groundHeight(x, z, 0.5, 0.4);
+    if (gy > 0.3 || underOpenSky(g.world, x, gy + 1.7, z)) continue;
+    for (const [dx, dz] of [[2.5, 0], [-2.5, 0], [0, 2.5], [0, -2.5], [2, 2], [-2, -2]]) {
+      const ox = x + dx, oz = z + dz;
+      const ogy = g.groundHeight(ox, oz, 0.5, 0.4);
+      if (ogy > 0.3 || !underOpenSky(g.world, ox, ogy + 1.7, oz)) continue;
+      pair = { covered: [x, z], open: [ox, oz] }; break;
+    }
+  }
+  if (!pair) return { name: 'team airstrike', pass: false, note: 'no covered/open pair on the map' };
+
+  const [eOpen, eCov] = enemies, fOpen = friends[0];
+  const savedBots = g.actors.map(a => a.bot);
+  for (const a of g.actors) a.bot = null;          // only the strike may do damage
+  g.teamStrikeUsed = { A: false, B: false };
+
+  const spots = new Map([
+    [eOpen, pair.open], [eCov, pair.covered],
+    [fOpen, [pair.open[0], pair.open[1] - 1.6]],   // friendly, squarely in the blast
+    [me, [pair.open[0], pair.open[1] - 4.5]],
+  ]);
+  const pin = () => { for (const [a, [x, z]] of spots) {
+    a.pos.set(x, g.groundHeight(x, z, 0.5, 0.4), z); a.vel.set(0, 0, 0); } };
+  for (const [a] of spots) { a.alive = true; a.health = 100; if (a.char) a.char.revive(); }
+  pin();
+
+  const firstCall = g.callTeamStrike(me, new V(pair.open[0], 0, pair.open[1]), Math.PI / 2);
+  const secondCall = g.callTeamStrike(me, new V(0, 0, 0), 0);
+  /* Health has to be sampled while the strike runs: a body that dies to it
+     respawns on full health inside the same window, which reads as "unharmed". */
+  const low = new Map([...spots.keys()].map(a => [a, 100]));
+  for (let i = 0; i < 8 * 60; i++) {
+    pin(); window.__step(1 / 60);
+    for (const a of low.keys()) low.set(a, Math.min(low.get(a), a.alive ? a.health : 0));
+  }
+  for (let i = 0; i < g.actors.length; i++) g.actors[i].bot = savedBots[i];
+
+  const dmg = (a) => 100 - Math.max(0, Math.round(low.get(a)));
+  const spent = { ...g.teamStrikeUsed };        // read before the cleanup below
+
+  /* Put the match back: this test pins four bodies in a corner and spends a
+     side's strike, and anything running after it would inherit both. */
+  g.teamStrikeUsed = { A: false, B: false };
+  for (const a of spots.keys()) if (a !== me) g.spawn(a, false);
+
+  const checks = {
+    oneCallPerTeam: firstCall === true && secondCall === false,
+    marksTeamSpent: spent[me.team] === true,
+    otherTeamUntouched: spent[me.team === 'A' ? 'B' : 'A'] === false,
+    hurtsExposedEnemy: dmg(eOpen) > 40,
+    sparesShelteredEnemy: dmg(eCov) === 0,
+    sparesFriendly: dmg(fOpen) === 0,
+    sparesCaller: dmg(me) === 0,
+  };
+  const failed = Object.keys(checks).filter(k => !checks[k]);
+  return {
+    name: 'team airstrike', checks, failed,
+    damage: { exposedEnemy: dmg(eOpen), shelteredEnemy: dmg(eCov),
+              friendly: dmg(fOpen), caller: dmg(me) },
+    where: pair,
+    pass: failed.length === 0,
+  };
+}
+
 export async function runAll(opts = {}) {
   const out = [];
   const push = (r) => { out.push(r); console.log(`[qa] ${r.pass ? 'PASS' : 'FAIL'}  ${r.name}`); return r; };
@@ -891,6 +981,7 @@ export async function runAll(opts = {}) {
   push(testMapWalk());
   push(testKillcam());
   push(await testControls());
+  push(testTeamAirstrike());
   push(testPerformance(opts.perfFrames ?? 320));
   window.__qaResults = out;
   return { pass: out.every(r => r.pass), failed: out.filter(r => !r.pass).map(r => r.name), results: out };

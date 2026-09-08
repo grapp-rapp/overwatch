@@ -71,7 +71,7 @@ function toTexture(canvas, repeat, srgb) {
 }
 
 /** Build an albedo+normal+roughness set from a per-pixel shader function. */
-function bake(N, seed, shade) {
+function bake(N, seed, shade, bakeOpts = {}) {
   const cv = document.createElement('canvas');
   cv.width = cv.height = N;
   const ctx = cv.getContext('2d');
@@ -83,7 +83,18 @@ function bake(N, seed, shade) {
   const height = new Float32Array(N * N);
   const noise = makeNoise(seed);
   const rnd = makeRng(seed ^ 0x1234);
-  const out = { r: 0, g: 0, b: 0, h: 0, rough: 0.8 };
+  const out = { r: 0, g: 0, b: 0, h: 0, rough: 0.8, metal: 0 };
+  /* Rust and worn paint are dielectric; bare and painted steel are not. Without
+     a metalness map the whole panel answers light identically and corrosion
+     reads as a printed decal rather than as corrosion. */
+  const wantMetal = !!bakeOpts.metalMap;
+  let mcv = null, mctx = null, mimg = null;
+  if (wantMetal) {
+    mcv = document.createElement('canvas');
+    mcv.width = mcv.height = N;
+    mctx = mcv.getContext('2d');
+    mimg = mctx.createImageData(N, N);
+  }
   for (let y = 0; y < N; y++) {
     for (let x = 0; x < N; x++) {
       shade(x, y, N, noise, rnd, out);
@@ -93,24 +104,45 @@ function bake(N, seed, shade) {
       const rv = clamp(out.rough * 255, 0, 255);
       rimg.data[o] = rv; rimg.data[o + 1] = rv; rimg.data[o + 2] = rv; rimg.data[o + 3] = 255;
       height[y * N + x] = out.h;
+      if (wantMetal) {
+        const mv = clamp(out.metal * 255, 0, 255);
+        mimg.data[o] = mv; mimg.data[o + 1] = mv; mimg.data[o + 2] = mv; mimg.data[o + 3] = 255;
+      }
     }
   }
   ctx.putImageData(img, 0, 0);
   rctx.putImageData(rimg, 0, 0);
-  return { albedo: cv, rough: rcv, height, N };
+  if (wantMetal) mctx.putImageData(mimg, 0, 0);
+  return { albedo: cv, rough: rcv, metal: mcv, height, N };
 }
 
 function materialFrom(baked, repeat, opts = {}) {
-  const nrm = normalFromHeight(baked.height, baked.N, opts.normalStrength ?? 2.4);
+  /* Several materials share one bake — the container panel is reused tinted three
+     ways, and again rotated for drums. The Sobel pass is the expensive part, so
+     cache the normal canvas on the bake instead of recomputing it per tint. */
+  const strength = opts.normalStrength ?? 2.4;
+  baked._nrm = baked._nrm || {};
+  const nrm = baked._nrm[strength] ||
+    (baked._nrm[strength] = normalFromHeight(baked.height, baked.N, strength));
   const m = new THREE.MeshStandardMaterial({
     map: toTexture(baked.albedo, repeat, true),
     normalMap: toTexture(nrm, repeat, false),
     roughnessMap: toTexture(baked.rough, repeat, false),
+    metalnessMap: baked.metal ? toTexture(baked.metal, repeat, false) : null,
     roughness: 1.0,
     metalness: opts.metalness ?? 0.0,
     color: opts.color ?? 0xffffff,
   });
   m.normalScale.set(opts.normalScale ?? 1.0, opts.normalScale ?? 1.0);
+  /* Drums are the same corrugated panel turned a quarter turn, so the ribs run
+     round the barrel rather than down it. */
+  if (opts.rotate) {
+    for (const t of [m.map, m.normalMap, m.roughnessMap, m.metalnessMap]) {
+      if (!t) continue;
+      t.center.set(0.5, 0.5);
+      t.rotation = opts.rotate;
+    }
+  }
   return m;
 }
 
@@ -332,12 +364,96 @@ export function makeImpactTexture(N = 64) {
   return t;
 }
 
+/* Corrugated shipping-container / vehicle panel.
+
+   The map's crates, containers, barrels and the wrecked truck used to be flat
+   untextured colour, which put half a dozen plastic-looking blocks next to
+   walls that had real surface detail. This is the same family of steel as the
+   warehouse cladding: trapezoidal ribs, rivet lines, paint worn through on the
+   crest of every rib because that is what everything scrapes against, and rust
+   blooming out of the wear. Baked bright and near-neutral so the per-crate
+   colour tint multiplies over it cleanly. */
+function containerSteel(N = 256) {
+  return bake(N, 0x5C1, (x, y, n, noise, rnd, o) => {
+    const u = x / 24, v = y / 24;
+    /* Trapezoidal corrugation on a 32 px pitch — 0.25 m at the 2 m tile, which
+       is close to the real thing. The profile is what sells it: a wide flat
+       crest, short steep flanks, a wide valley. Shading the valley down and the
+       crest up gives the panel its read at a distance, where the normal map is
+       already mip-filtered away. */
+    const p = (x % 32) / 32;
+    const rib = p < 0.10 ? 0.5 - 0.5 * Math.cos(Math.PI * (p / 0.10))
+              : p < 0.44 ? 1
+              : p < 0.56 ? 0.5 + 0.5 * Math.cos(Math.PI * ((p - 0.44) / 0.12))
+              : 0;
+    const grain = fbm(noise, u * 7, v * 7, 4);
+    const wear = fbm(noise, u * 1.2 + 3, v * 1.2 + 7, 4);
+    const rustN = fbm(noise, u * 0.6 + 11, v * 0.6 + 2, 4);
+    // paint goes first on the crests, because that is what everything scrapes
+    const bare = clamp(Math.max(0, wear - 0.64) / 0.36 * (0.25 + rib * 0.95), 0, 1);
+    const rust = clamp(Math.max(0, rustN - 0.66) / 0.34, 0, 1) * (0.30 + bare * 0.80);
+    /* One rail per 128 px (1 m). An earlier pass put a riveted seam every 0.5 m
+       and the whole container read as wire mesh rather than as steel. */
+    const sy = Math.abs((y % 128) - 64);
+    const seam = sy < 1.2 ? 1 : 0;
+    const rv = sy < 2.4 && Math.hypot((x % 32) - 16, sy) < 1.7 ? 1 : 0;
+
+    /* Only a hint of the corrugation goes into the albedo; the normal map does
+       the shading. Baking the full crest-to-valley contrast in made the panel
+       read as a grille, and it stayed a grille when the sun moved. */
+    let base = 178 + grain * 24 - (1 - rib) * 15 + rv * 8;
+    let r = base, g = base, b = base;
+    const steel = 162 + grain * 22;
+    r += (steel - r) * bare; g += (steel + 2 - g) * bare; b += (steel + 6 - b) * bare;
+    r += (116 - r) * rust; g += (62 - g) * rust; b += (36 - b) * rust;
+    o.r = r; o.g = g; o.b = b;
+    o.h = rib * 1.55 + grain * 0.14 + rv * 0.40 - seam * 0.22 - rust * 0.18;
+    /* Matched to the warehouse cladding (which already reads right) rather than
+       to a showroom finish: at 0.32 the rib crests threw a hard sparkle that
+       crawled across the panel as the sun moved. */
+    o.rough = 0.44 + rust * 0.44 + (1 - rib) * 0.05 + grain * 0.05;
+    o.metal = 0.96 - rust * 0.84;
+  }, { metalMap: true });
+}
+
+/* Sandbags. Deliberately not metal — but it was flat colour, which is what made
+   it read as plastic. Woven hessian over lumpy, overfilled bags with the seam
+   between them pressed in. */
+function burlap(N = 256) {
+  return bake(N, 0x8B4, (x, y, n, noise, rnd, o) => {
+    const u = x / 24, v = y / 24;
+    // one bag per 64 x 32 cell, courses offset like real stacking
+    const row = Math.floor(y / 32);
+    const xo = x + (row % 2) * 32;
+    const bag = Math.floor(xo / 64) * 31 + row * 17;
+    const lx = ((xo % 64) / 64) * 2 - 1, ly = ((y % 32) / 32) * 2 - 1;
+    const bulge = Math.max(0, 1 - (lx * lx * 0.88 + ly * ly * 1.0));
+    const seam = Math.max(Math.abs(lx) > 0.94 ? 1 : 0, Math.abs(ly) > 0.92 ? 1 : 0);
+    const weave = (Math.sin(x * 1.55) * 0.5 + 0.5) * (Math.sin(y * 1.55) * 0.5 + 0.5);
+    const grain = fbm(noise, u * 9, v * 9, 4);
+    const dust = fbm(noise, u * 1.4 + 5, v * 1.4 + 1, 3);
+    let base = 132 + bulge * 30 + grain * 26 + weave * 12 - seam * 46
+             + ((bag * 53) % 15) - 7 + dust * 14;
+    o.r = base * 1.07; o.g = base * 0.96; o.b = base * 0.70;
+    o.h = bulge * 0.95 - seam * 1.25 + weave * 0.12 + grain * 0.14;
+    o.rough = 0.92 + grain * 0.07;
+  });
+}
+
 /* ---- public build --------------------------------------------------------- */
 let CACHE = null;
 export function buildMaterials() {
   if (CACHE) return CACHE;
   const asp = asphalt(), con = concrete(), pla = plasterWall(), dir = dirt(),
-        met = metalPanel(), wod = woodPlank(), rof = roofTile();
+        met = metalPanel(), wod = woodPlank(), rof = roofTile(),
+        ctr = containerSteel(), bur = burlap();
+  /* Painted steel, not paint. The tints are pre-divided by the panel's mean
+     albedo so the crates land on the colours the map was laid out with, and
+     the metalness matches the warehouse cladding (0.72) so a container beside
+     a metal wall answers the sun the same way. */
+  const painted = (color) => materialFrom(ctr, 1, { color, metalness: 0.72, normalScale: 1.10 });
+  const drum = (color) => materialFrom(ctr, 1,
+    { color, metalness: 0.72, normalScale: 0.95, rotate: Math.PI / 2 });
   CACHE = {
     asphalt:  materialFrom(asp, 14, { normalScale: 0.9 }),
     concrete: materialFrom(con, 3.0, { normalScale: 0.8 }),
@@ -346,14 +462,19 @@ export function buildMaterials() {
     metal:    materialFrom(met, 2.0, { metalness: 0.72, normalScale: 0.9 }),
     wood:     materialFrom(wod, 2.6, { normalScale: 0.85 }),
     roof:     materialFrom(rof, 4.0, { normalScale: 0.8 }),
+    sandbag:  materialFrom(bur, 1, { normalScale: 1.25 }),
+    // containers, crates and the truck cab
+    paintA:   painted(0x5ea270),
+    paintB:   painted(0xbc5843),
+    paintC:   painted(0x437096),
+    // fuel drums: the same panel a quarter turn round, so the ribs hoop it
+    drumA:    drum(0x8c9096),
+    drumB:    drum(0xb06a3c),
     // untextured helpers
     glass:    new THREE.MeshStandardMaterial({ color: 0x6e8b93, roughness: 0.08, metalness: 0.5,
                 transparent: true, opacity: 0.30, side: THREE.DoubleSide }),
-    rubber:   new THREE.MeshStandardMaterial({ color: 0x15161a, roughness: 0.94 }),
-    paintA:   new THREE.MeshStandardMaterial({ color: 0x3e6b4a, roughness: 0.62, metalness: 0.25 }),
-    paintB:   new THREE.MeshStandardMaterial({ color: 0x7c3a2c, roughness: 0.62, metalness: 0.25 }),
-    paintC:   new THREE.MeshStandardMaterial({ color: 0x2c4a63, roughness: 0.60, metalness: 0.28 }),
-    sandbag:  new THREE.MeshStandardMaterial({ color: 0x9c8a63, roughness: 0.96 }),
+    // tyres: the asphalt bake is already dark pebbled rubber, tinted down
+    rubber:   materialFrom(asp, 1, { color: 0x2a2b2e, normalScale: 1.3 }),
   };
   // metal panels are used at container scale — stretch the repeat
   CACHE.metal.map.repeat.set(3, 1.2);
@@ -366,4 +487,5 @@ export const SURFACE_KIND = {
   asphalt: 'concrete', concrete: 'concrete', plaster: 'concrete', roof: 'concrete',
   dirt: 'dirt', metal: 'metal', wood: 'wood', sandbag: 'dirt',
   glass: 'glass', rubber: 'dirt', paintA: 'metal', paintB: 'metal', paintC: 'metal',
+  drumA: 'metal', drumB: 'metal',
 };

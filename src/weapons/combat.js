@@ -390,11 +390,28 @@ function exitThickness(box, o, d, tEnter) {
 /**
  * Radial damage with line-of-sight occlusion. Returns [{actor, damage}].
  */
-export function explode(world, origin, radius, maxDamage, minDamage, owner) {
+/**
+ * Is there open sky directly above this point?
+ *
+ * An airstrike cannot reach you through a roof, a catwalk or a stack of
+ * containers. Straight up is the honest test: it is the same geometry the
+ * bombs would have to fall through, and it is cheap enough to run per victim.
+ */
+export function underOpenSky(world, x, y, z) {
+  return world.map.raycast(x, y, z, 0, 1, 0, 60) === null;
+}
+
+/**
+ * @param opts.enemiesOnly  skip anyone on the owner's team, owner included
+ * @param opts.openSkyOnly  skip anyone with geometry overhead
+ */
+export function explode(world, origin, radius, maxDamage, minDamage, owner, opts = {}) {
   const out = [];
   for (const a of world.actors) {
     if (!a.alive || !a.char) continue;
+    if (opts.enemiesOnly && owner && a.team === owner.team) continue;
     const cx = a.pos.x, cy = a.pos.y + 0.95, cz = a.pos.z;
+    if (opts.openSkyOnly && !underOpenSky(world, cx, a.pos.y + 1.7, cz)) continue;
     const dist = Math.hypot(cx - origin.x, cy - origin.y, cz - origin.z);
     if (dist > radius) continue;
     // solid cover blocks the blast

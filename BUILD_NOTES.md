@@ -412,3 +412,127 @@ finds a leg and that *no* ray at knee height ever comes back as head or torso,
 which is the property actually worth guarding.
 
 Full suite after both changes: **12 of 12 pass.**
+
+---
+
+## Material pass: nothing in the map is flat colour any more
+
+Reported after playing: *"elements are metal and then you have random cubes or
+things that look plastic."*
+
+Fair. The map's box materials split into two classes. Walls, floors, roofs and
+the warehouse cladding ran through `materialFrom()` — an fBm albedo, a
+roughness map, and a normal map derived from the same height field by a Sobel
+filter. The rest — `paintA/B/C`, `sandbag`, `rubber` — were bare
+`MeshStandardMaterial({ color, roughness })` with no maps at all. Every shipping
+container, crate, barrel, sandbag nest and the wrecked truck was a flat tinted
+slab standing next to a wall with real surface detail, which is exactly what
+reads as plastic.
+
+**What changed**
+
+`containerSteel()` is a new bake: trapezoidal corrugation on a 32 px pitch
+(0.25 m at the 2 m tile, close to the real thing), a riveted rail every 128 px,
+paint worn through on the rib crests weighted by an fBm wear field, and rust
+blooming out of the wear. It is baked bright and near-neutral so the per-crate
+colour tint multiplies over it cleanly, and the tints were pre-divided by the
+panel's mean albedo so the crates land on the colours the map was laid out with.
+
+`burlap()` is the second new bake — woven hessian over lumpy overfilled bags,
+courses offset the way they actually stack, seams pressed in between them.
+Sandbags are still not metal, deliberately; they were just never meant to be
+plastic either.
+
+Two things in the pipeline had to grow to support it:
+
+- **A metalness channel.** `bake()` now optionally emits one, and
+  `materialFrom()` binds it. Rust and worn paint are dielectric; without the map
+  the whole panel answers light identically and the corrosion reads as a printed
+  decal rather than as corrosion.
+- **Texture rotation.** Fuel drums are the same corrugated panel turned a
+  quarter turn, so the ribs hoop the barrel instead of running down it — a free
+  second material off one bake. Four map props that were "small containers"
+  became `drumA` / `drumB`.
+
+Also cached: the Sobel pass is the expensive part of `materialFrom()`, and five
+materials now share the container bake. The normal canvas is memoised on the
+bake rather than recomputed per tint. Two new 256² bakes cost roughly 0.9 s of
+boot; cold boot went 3.9 s → 4.7 s, still well inside the 10 s budget.
+
+**Two tuning passes, both from looking at the render rather than the code.**
+The first version baked the full crest-to-valley contrast into the albedo and
+the container read as a wire grille — and stayed a grille when the sun moved,
+which is the tell that shading is painted on rather than lit. Dropping the
+albedo contribution from 42 to 15 and letting the normal map carry it fixed the
+shape. The second pass fixed a hard specular sparkle that crawled across the
+panel: roughness had been set to 0.32 for a showroom finish, against 0.40+ on
+the warehouse cladding that already looked right. Matching it — 0.44 base — and
+easing `normalScale` from 1.45 to 1.10 settled it.
+
+---
+
+## The airstrike is now a team asset, not a killstreak
+
+Requested: drop the generic air strikes; give each team exactly one airstrike
+for the match; it only hurts the opposite team, and only where they are in the
+open.
+
+**Removed** from the streak ladder: `strike` (5 kills) and `bomber` (9 kills).
+What is left is UAV at 3, attack helicopter at 7, chopper gunner at 11 — and
+key `6` is freed for the new asset.
+
+**`TEAM_STRIKE`** is deliberately not in `STREAKS`. It is spent per *team*, not
+per player, tracked in `game.teamStrikeUsed = { A, B }` and reset with the
+match. The flag is set before the jets fly: the run takes several seconds, and
+without that a player could open the tac-map twice and buy two.
+
+**The two damage rules** are options on `explode()`:
+
+- `enemiesOnly` skips anyone on the owner's team, the caller included.
+- `openSkyOnly` skips anyone with geometry overhead. The test is
+  `underOpenSky()` — a ray straight up from the victim's head. That is the
+  honest check: it is the same geometry the bombs would have to fall through,
+  and it costs one raycast per victim per blast.
+
+`scheduleExplosion()` carries the options through the blast queue so the shape
+of an airstrike blast is decided where the strike is defined, not where it
+detonates. Nothing else in the game passes them, so grenades and rockets still
+hurt everyone the way they always did.
+
+**The enemy side plays it properly.** `updateEnemyStrike()` re-evaluates every
+3 s after the opening 35 seconds. It only considers targets who are *actually*
+exposed — dropping it on a man indoors would waste the side's one shot — and
+picks the tightest cluster of them, holding for two or more unless the match is
+nearly over. Some matches it never comes, which is correct.
+
+### Verified
+
+Three actors staged around one aim point, every AI made inert so nothing but the
+strike could do damage, health sampled *during* the run — a body killed by it
+respawns on full health inside the same window, which reads as "unharmed" if you
+only look afterwards:
+
+| | damage taken |
+|---|---|
+| Enemy standing in the open | **100 — killed** |
+| Enemy under cover, 2.5 m away | **0** |
+| Friendly in the open, inside the blast | **0** |
+| The caller | **0** |
+
+The same blast with no rules applied, as a control: 166 / 105 / 130. So cover
+and team are doing the work, not distance.
+
+End to end through the real input layer: key `6` opens the tac-map titled
+"TEAM AIRSTRIKE — YOUR TEAM'S ONLY STRIKE", a click confirms and puts two jets
+in the air, the rail entry flips READY → SPENT, and pressing `6` again is
+refused with a banner. Over 110 seconds of ordinary match the enemy called
+theirs once, at t=43 s, and neither side got a second.
+
+`testTeamAirstrike()` now asserts all seven properties as part of `runAll()`,
+and restores the match afterwards — it pins four bodies in a corner and spends a
+side's strike, and the first version of it quietly poisoned every test that ran
+after it.
+
+**Full suite: 13 of 13 pass.** Cold boot 3.8–4.7 s. Frame time at the default
+9 actors: 9.07 ms median, 109 fps, 250 draw calls, 182k triangles. Full match
+7,830 frames, 20–17 VICTORY.

@@ -8,12 +8,12 @@
    ========================================================================== */
 import * as THREE from 'three';
 import { Character } from '../chars/characters.js';
-import { WeaponState, resolveShot, explode } from '../weapons/combat.js';
+import { WeaponState, resolveShot, explode, underOpenSky } from '../weapons/combat.js';
 import { WEAPONS, LETHALS, FIRE } from '../weapons/defs.js';
 import { Projectile } from '../weapons/viewmodel.js';
 import { Bot, DIFFICULTY, resetPathBudget } from '../ai/bot.js';
 import { Recorder, KillcamPlayer } from './killcam.js';
-import { Killstreaks, STREAKS } from './killstreaks.js';
+import { Killstreaks, STREAKS, TEAM_STRIKE } from './killstreaks.js';
 import { clamp, lerp, damp, dampAngle, wrapPi, makeRng, callsign, fmtTime } from '../core/util.js';
 
 const RADIUS = 0.36;
@@ -205,6 +205,10 @@ export class Game {
     this.pendingBlasts.length = 0;
     this.timers.length = 0;
     this.streaks.reset();
+    /* One airstrike each, for the whole match. Keyed by team so a respawn, a
+       swap or a dead caller cannot get a side a second one. */
+    this.teamStrikeUsed = { A: false, B: false };
+    this.enemyStrikeAt = 0;
     this.effects.clear();
     this.recorder.reset();
     nextId = 1;
@@ -276,6 +280,7 @@ export class Game {
       this.updateProjectiles(dt);
       this.updateBlasts(dt);
       this.streaks.update(dt);
+      this.updateEnemyStrike(dt);
       this.recorder.sample(dt, this.actors);
     }
 
@@ -739,19 +744,11 @@ export class Game {
           // bots cash streaks automatically a moment later
           this.after(1.4 + this.rng() * 2.2, () => {
             if (!a.alive || this.state === STATE.RESULT) return;
-            const aim = this.pickBotStrikeTarget(a);
-            this.streaks.call(s.id, a, aim, this.rng() * 6.28);
+            this.streaks.call(s.id, a);
           });
         }
       }
     }
-  }
-
-  pickBotStrikeTarget(a) {
-    const foes = this.actors.filter(o => o.alive && o.team !== a.team);
-    if (!foes.length) return new THREE.Vector3(0, 0, 0);
-    const t = this.rng.pick(foes);
-    return new THREE.Vector3(t.pos.x, 0, t.pos.z);
   }
 
   /* ---------------------------------------------------------------- killcam */
@@ -837,8 +834,8 @@ export class Game {
     for (const o of this.actors) if (o.bot) o.bot.hearGunshot(p.pos, 2.2);
   }
 
-  scheduleExplosion(x, y, z, radius, dmg, minDmg, owner, delay) {
-    this.pendingBlasts.push({ x, y, z, radius, dmg, minDmg, owner, t: delay });
+  scheduleExplosion(x, y, z, radius, dmg, minDmg, owner, delay, opts) {
+    this.pendingBlasts.push({ x, y, z, radius, dmg, minDmg, owner, t: delay, opts: opts || null });
   }
 
   updateBlasts(dt) {
@@ -848,9 +845,9 @@ export class Game {
       if (b.t > 0) continue;
       this.pendingBlasts.splice(i, 1);
       const pos = new THREE.Vector3(b.x, b.y, b.z);
-      const hits = explode(this.world, pos, b.radius, b.dmg, b.minDmg, b.owner);
+      const hits = explode(this.world, pos, b.radius, b.dmg, b.minDmg, b.owner, b.opts || undefined);
       for (const h of hits) {
-        this.applyDamage(h.actor, h.damage, b.owner, 'AIRSTRIKE', false,
+        this.applyDamage(h.actor, h.damage, b.owner, (b.opts && b.opts.label) || 'AIRSTRIKE', false,
           this._v.set(h.dirX, 0, h.dirZ), 'blast');
       }
       const d = this.camera.position.distanceTo(pos);
@@ -910,15 +907,22 @@ export class Game {
     /* hold breath */
     W.holdingBreath = I.down('hold') && a.adsW > 0.6 && !!W.def.sway;
 
+    /* the team airstrike — not a streak, so it has its own key and its own
+       availability rule: your side simply has not spent it yet */
+    if (I.hit('streak2')) {
+      if (this.teamStrikeReady(a)) this.openStrikeSelect(TEAM_STRIKE, a);
+      else this.hud.banner('AIRSTRIKE SPENT', 'YOUR TEAM HAS USED ITS STRIKE', true);
+    }
+
     /* killstreaks */
     for (const s of STREAKS) {
-      const key = s.key === '5' ? 'streak1' : s.key === '6' ? 'streak2' : 'streak3';
+      const key = s.key === '5' ? 'streak1' : 'streak3';
       if (!I.hit(key)) continue;
       const avail = STREAKS.filter(x => x.key === s.key && a.streak >= x.cost);
       if (!avail.length) continue;
       const best = avail[avail.length - 1];
-      if (best.id === 'strike' || best.id === 'bomber') this.openStrikeSelect(best, a);
-      else { this.streaks.call(best.id, a); a.streak = 0; a.streakEarned.clear(); this.hud.setStreaks(0); }
+      this.streaks.call(best.id, a);
+      a.streak = 0; a.streakEarned.clear(); this.hud.setStreaks(0);
       break;
     }
 
@@ -1064,11 +1068,73 @@ export class Game {
   }
 
   /* ---------------------------------------------------------------- strike */
+  /* ------------------------------------------------------- team airstrike */
+
+  /** Has this actor's side still got its one strike, and can it call it now? */
+  teamStrikeReady(a) {
+    if (!a || !a.alive || this.state !== STATE.LIVE) return false;
+    return !this.teamStrikeUsed[a.team];
+  }
+
+  /**
+   * Spend the caller's team airstrike.
+   *
+   * Marking the team spent *before* the jets fly matters: the run takes several
+   * seconds, and without it a player could open the map twice and buy two.
+   */
+  callTeamStrike(owner, aim, heading) {
+    if (!this.teamStrikeReady(owner)) return false;
+    this.teamStrikeUsed[owner.team] = true;
+    this.streaks.teamStrike(owner, aim, heading);
+    this.hud.setTeamStrike(this.teamStrikeReady(this.me));
+    return true;
+  }
+
+  /**
+   * The enemy side calls its strike once, on its own.
+   *
+   * It aims at the tightest cluster of our people who are actually standing in
+   * the open, because that is the only place the bombs bite — dropping it on a
+   * man indoors would waste the side's one shot. If nobody is exposed it simply
+   * waits, which is why the strike sometimes never comes.
+   */
+  updateEnemyStrike(dt) {
+    if (this.state !== STATE.LIVE) return;
+    const team = this.playerTeam === 'A' ? 'B' : 'A';
+    if (this.teamStrikeUsed[team]) return;
+    if (this.time < 35) return;                 // not in the opening exchange
+    if (this.time < this.enemyStrikeAt) return;
+    this.enemyStrikeAt = this.time + 3.0;       // re-evaluate every few seconds
+
+    const caller = this.actors.find(a => a.alive && a.team === team && a.bot);
+    if (!caller) return;
+
+    const exposed = this.actors.filter(a =>
+      a.alive && a.team !== team && underOpenSky(this.world, a.pos.x, a.pos.y + 1.7, a.pos.z));
+    if (!exposed.length) return;
+
+    // tightest cluster: the target with the most exposed company inside a stick
+    let best = null, bestN = 0;
+    for (const t of exposed) {
+      let n = 0;
+      for (const o of exposed) if (Math.hypot(o.pos.x - t.pos.x, o.pos.z - t.pos.z) < 9) n++;
+      if (n > bestN) { bestN = n; best = t; }
+    }
+    if (!best) return;
+    // hold the single strike for a worthwhile target unless the match is late
+    if (bestN < 2 && this.timeLeft > 90 && this.rng() > 0.02) return;
+
+    const aim = new THREE.Vector3(best.pos.x, 0, best.pos.z);
+    const heading = Math.atan2(best.pos.x - caller.pos.x, best.pos.z - caller.pos.z);
+    this.callTeamStrike(caller, aim, heading);
+  }
+
   openStrikeSelect(def, owner) {
     this.strikeMode = { def, owner };
     this.strikeCursor.x = 0; this.strikeCursor.z = 0; this.strikeCursor.heading = 0;
     document.getElementById('strikeSel').classList.remove('hidden');
-    document.getElementById('ssTitle').textContent = def.name;
+    document.getElementById('ssTitle').textContent =
+      def.name + ' — YOUR TEAM’S ONLY STRIKE';
     this.drawStrikeMap();
   }
 
@@ -1080,11 +1146,9 @@ export class Game {
     this.strikeCursor.heading += I.mouse.wheel * 0.24;
     this.drawStrikeMap();
     if (I.mouse.leftPressed) {
-      const { def, owner } = this.strikeMode;
-      this.streaks.call(def.id, owner,
+      const { owner } = this.strikeMode;
+      this.callTeamStrike(owner,
         new THREE.Vector3(this.strikeCursor.x, 0, this.strikeCursor.z), this.strikeCursor.heading);
-      owner.streak = 0; owner.streakEarned.clear();
-      this.hud.setStreaks(0);
       this.closeStrikeSelect();
     } else if (I.hit('pause')) this.closeStrikeSelect();
   }
@@ -1118,7 +1182,7 @@ export class Game {
     const h = this.strikeCursor.heading;
     const dx = Math.sin(h), dz = Math.cos(h);
     const cx = X(this.strikeCursor.x), cz = Z(this.strikeCursor.z);
-    const L = (this.strikeMode && this.strikeMode.def.id === 'bomber') ? 40 : 18;
+    const L = 18;
     c.strokeStyle = '#ffcb47'; c.lineWidth = 2; c.setLineDash([7, 5]);
     c.beginPath();
     c.moveTo(cx - dx * L * s, cz - dz * L * s);
@@ -1144,6 +1208,7 @@ export class Game {
       Math.round(clamp(a.health / a.maxHealth, 0, 1) * 3));
     this.hud.setAmmo(W.mag, W.reserve, W.mag <= W.def.mag * 0.2);
     this.hud.setStreaks(a.streak);
+    this.hud.setTeamStrike(this.teamStrikeReady(a));
     this.hud.setLethal(a.lethalDef.name, a.lethalCount);
 
     /* reticle gap from real spread */

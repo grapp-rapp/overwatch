@@ -23,6 +23,7 @@ const TILE = {
   asphalt: 5.0, concrete: 2.6, plaster: 3.0, dirt: 6.0,
   metal: 2.4, wood: 1.8, roof: 2.2, sandbag: 1.2,
   paintA: 2.0, paintB: 2.0, paintC: 2.0, rubber: 1.0, glass: 2.0,
+  drumA: 1.15, drumB: 1.15,
 };
 
 /* ---- box geometry with world-scaled UVs ---------------------------------- */
@@ -348,12 +349,12 @@ function describe(B) {
     B.cbox(-13.0, 0, 12.0, 2.5, 0.9, 1.4, 'rubber');
 
     // barrels and pallets
-    B.cbox(-6.0, 0, -13.0, 0.9, 1.1, 0.9, 'paintB');
-    B.cbox(-5.0, 0, -12.2, 0.9, 1.1, 0.9, 'paintA');
+    B.cbox(-6.0, 0, -13.0, 0.9, 1.1, 0.9, 'drumB');
+    B.cbox(-5.0, 0, -12.2, 0.9, 1.1, 0.9, 'drumA');
     B.cbox(-27.5, 0, 3.0, 1.4, 0.55, 1.4, 'wood');
-    B.cbox(-2.5, 0, 10.5, 1.2, 1.35, 1.2, 'paintC');
+    B.cbox(-2.5, 0, 10.5, 1.2, 1.35, 1.2, 'drumA');
     B.cbox(-9.5, 0, 18.5, 2.2, 1.15, 1.1, 'concrete');
-    B.cbox(2.0, 0, 16.0, 1.1, 1.4, 1.1, 'paintA');
+    B.cbox(2.0, 0, 16.0, 1.1, 1.4, 1.1, 'drumB');
     B.cbox(6.5, 0, 12.5, 2.4, 0.95, 0.7, 'concrete');
   });
 }

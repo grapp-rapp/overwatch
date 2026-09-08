@@ -2,10 +2,13 @@
    Killstreaks.
 
      3  UAV                 sweeps a radar pulse; enemies show on the minimap
-     5  PRECISION AIRSTRIKE you paint a line on the tac-map; two jets run it
      7  ATTACK HELICOPTER   an AI gunship orbits and engages hostiles
-     9  STEALTH BOMBER      a single pass, a wall of bombs, no warning
     11  CHOPPER GUNNER      you take the minigun; thermal optics, 40 seconds
+
+   The airstrike is deliberately not on that ladder. Each side gets exactly one
+   for the whole match: you paint a line on the tac-map, two jets run it, and it
+   only touches the other team — and only the part of it standing under open
+   sky. Anyone with a roof, a catwalk or a container over their head is safe.
 
    Aircraft are procedural models (no external assets) with real rotor motion,
    and everything they shoot goes through the same resolveShot path the infantry
@@ -21,15 +24,19 @@ const rng = makeRng(0x57BEAC);
 export const STREAKS = [
   { id: 'uav',     name: 'UAV',                 cost: 3,  key: '5', dur: 32,
     desc: 'Reveals hostiles on the minimap', icon: 'uav' },
-  { id: 'strike',  name: 'PRECISION AIRSTRIKE', cost: 5,  key: '6', dur: 0,
-    desc: 'Paint a line — two jets run it', icon: 'jet' },
   { id: 'heli',    name: 'ATTACK HELICOPTER',   cost: 7,  key: '7', dur: 42,
     desc: 'Gunship orbits and engages', icon: 'heli' },
-  { id: 'bomber',  name: 'STEALTH BOMBER',      cost: 9,  key: '6', dur: 0,
-    desc: 'One pass, no warning', icon: 'bomb' },
   { id: 'gunner',  name: 'CHOPPER GUNNER',      cost: 11, key: '7', dur: 40,
     desc: 'You take the minigun', icon: 'gunner' },
 ];
+
+/* The airstrike is not a killstreak. Each side gets exactly one for the whole
+   match, it is spent by the team rather than by a player, it cannot touch the
+   side that called it, and it only reaches people standing under open sky. */
+export const TEAM_STRIKE = {
+  id: 'teamstrike', name: 'TEAM AIRSTRIKE', key: '6', icon: 'jet',
+  desc: 'One per team, per match — only bites in the open',
+};
 
 export const STREAK_ICONS = {
   uav:    'M2 12h20M12 4l4 8-4 8-4-8z',
@@ -203,8 +210,6 @@ export class Killstreaks {
     if (!def) return false;
     switch (id) {
       case 'uav': this._uav(owner); break;
-      case 'strike': this._airstrike(owner, aimPoint, heading, false); break;
-      case 'bomber': this._airstrike(owner, aimPoint, heading, true); break;
       case 'heli': this._heli(owner, false); break;
       case 'gunner': this._heli(owner, true); break;
     }
@@ -229,7 +234,18 @@ export class Killstreaks {
     this.active.push(a);
   }
 
-  _airstrike(owner, aim, heading, stealth) {
+  /**
+   * The team airstrike. Two jets run the painted line and walk a stick of
+   * bombs down it.
+   *
+   * @param owner  the actor who called it — its team is immune
+   */
+  teamStrike(owner, aim, heading) {
+    this._airstrike(owner, aim, heading, false, true);
+    return true;
+  }
+
+  _airstrike(owner, aim, heading, stealth, teamOnly) {
     const n = stealth ? 1 : 2;
     const dirX = Math.sin(heading), dirZ = Math.cos(heading);
     for (let i = 0; i < n; i++) {
@@ -245,13 +261,17 @@ export class Killstreaks {
         dropStart: 0.455, dropEnd: stealth ? 0.60 : 0.545,
         bombs: stealth ? 16 : 9, dropped: 0,
         aim: new THREE.Vector3(px, 0, pz), heading, spacing: stealth ? 4.6 : 3.4,
+        teamOnly: !!teamOnly,
       };
       this.g.scene.add(jet);
       this.active.push(a);
     }
     this.g.audio.play('jet', { vol: 1.0, important: true });
-    if (owner.team === this.g.playerTeam) this.g.hud.banner(stealth ? 'STEALTH BOMBER' : 'AIRSTRIKE INBOUND', 'ON TARGET', false);
-    else this.g.hud.banner('INCOMING AIRSTRIKE', 'TAKE COVER', true);
+    if (owner.team === this.g.playerTeam) {
+      this.g.hud.banner('AIRSTRIKE INBOUND', 'ON TARGET', false);
+    } else {
+      this.g.hud.banner('INCOMING AIRSTRIKE', 'GET UNDER COVER', true);
+    }
   }
 
   _heli(owner, gunner) {
@@ -311,7 +331,8 @@ export class Killstreaks {
             const px = a.aim.x + Math.sin(a.heading) * off;
             const pz = a.aim.z + Math.cos(a.heading) * off;
             g.scheduleExplosion(px, 0.4, pz, a.stealth ? 8.5 : 7.4,
-              a.stealth ? 210 : 185, 30, a.owner, 0.30 + idx * 0.055);
+              a.stealth ? 210 : 185, 30, a.owner, 0.30 + idx * 0.055,
+              a.teamOnly ? { enemiesOnly: true, openSkyOnly: true, label: 'AIRSTRIKE' } : null);
           }
         }
         if (k >= 1) { g.scene.remove(a.obj); this.active.splice(i, 1); }

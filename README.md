@@ -49,6 +49,14 @@ will walk to that guess and be wrong. It paths the map — including up both
 staircases and onto the catwalks — takes cover, flanks, leads its shots, reloads
 behind cover, and can be beaten.
 
+**Every surface is a material, not a colour.** The crates, shipping containers,
+fuel drums and the wrecked truck are corrugated painted steel — trapezoidal
+ribs on a 0.25 m pitch, riveted rails, paint worn through on the crests where
+everything scrapes, and rust blooming out of the wear, with a metalness map so
+the corroded patches stop answering light like metal. Drums are the same panel
+turned a quarter turn so the ribs hoop the barrel. Sandbags are woven hessian
+over lumpy, overfilled bags. Nothing in the map is flat untinted colour.
+
 **Everything you hear is synthesised at boot.** A gunshot is four layers: the
 transient crack, a pitch-swept low-end body, mechanical action a few tens of
 milliseconds behind, and an outdoor tail with discrete early reflections whose
@@ -77,7 +85,8 @@ field), the sky, every weapon, all the gear, the aircraft, and the entire map.
 | **V** | Melee |
 | **B** | Cycle fire mode |
 | **H** | Hold breath (scoped) |
-| **5 / 6 / 7** | Call in an earned killstreak |
+| **5 / 7** | Call in an earned killstreak |
+| **6** | Team airstrike (one per team, per match) |
 | **Tab** | Scoreboard |
 | **Esc** | Pause |
 
@@ -90,10 +99,27 @@ degrees.
 | Kills | | |
 |---|---|---|
 | 3 | **UAV** | Reveals hostiles on the minimap |
-| 5 | **Precision airstrike** | Paint a line on the tac-map; two jets run it |
 | 7 | **Attack helicopter** | AI gunship orbits and engages |
-| 9 | **Stealth bomber** | One pass, no warning |
 | 11 | **Chopper gunner** | You take the minigun, 40 seconds |
+
+## The team airstrike
+
+Each side gets **one airstrike for the whole match** — not a reward, not
+something you earn twice. Press **6**, paint a line across the tactical map,
+and two jets walk a stick of bombs down it.
+
+It obeys two rules that make it a decision rather than a free kill:
+
+- **It only touches the other team.** Your own side, and you, can stand in it.
+- **It only reaches people in the open.** The check is a ray straight up from
+  the target — the same geometry the bombs would have to fall through. Under a
+  warehouse roof, a catwalk or a stacked container you take nothing, even at
+  the centre of the blast.
+
+So it is worth holding until the other side is caught crossing open ground, and
+worth remembering that they are holding one for you. The enemy AI plays it the
+same way: it waits, watches for two or more of your side exposed at once, and
+spends its single strike on that — which means some matches it never comes.
 
 ## The map
 

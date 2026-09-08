@@ -10,7 +10,7 @@
    crosshair is an honest readout of your cone rather than decoration.
    ========================================================================== */
 import { clamp, lerp, fmtTime, wrapPi } from '../core/util.js';
-import { STREAKS, STREAK_ICONS } from './killstreaks.js';
+import { STREAKS, STREAK_ICONS, TEAM_STRIKE } from './killstreaks.js';
 import { MAP_W, MAP_D, HALF_W, HALF_D } from '../world/map.js';
 
 const $ = (id) => document.getElementById(id);
@@ -62,6 +62,28 @@ export class HUD {
       rail.appendChild(d);
       return { el: d, fill: d.querySelector('.sk-fl'), def: s, ready: false };
     });
+    /* The airstrike sits on the same rail but is not a streak: no progress bar,
+       because there is no progress to make — your side either still has it or
+       has spent it. */
+    const t = document.createElement('div');
+    t.className = 'sk team';
+    t.innerHTML = `<svg class="sk-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="${STREAK_ICONS[TEAM_STRIKE.icon]}"/></svg>
+      <div class="sk-body"><div class="sk-nm">${TEAM_STRIKE.name}</div>
+        <div class="sk-sub" id="tsState">READY</div></div>
+      <div class="sk-key">${TEAM_STRIKE.key}</div>`;
+    rail.appendChild(t);
+    this.teamStrikeEl = { el: t, state: t.querySelector('#tsState'), ready: null };
+  }
+
+  /** @param ready is our side's one strike still in hand */
+  setTeamStrike(ready) {
+    const t = this.teamStrikeEl;
+    if (!t || t.ready === ready) return;
+    t.ready = ready;
+    t.el.classList.toggle('ready', ready);
+    t.el.classList.toggle('spent', !ready);
+    t.state.textContent = ready ? 'READY' : 'SPENT';
   }
 
   _buildScope() {
