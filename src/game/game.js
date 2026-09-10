@@ -14,7 +14,7 @@ import { Projectile } from '../weapons/viewmodel.js';
 import { Bot, DIFFICULTY, resetPathBudget } from '../ai/bot.js';
 import { Recorder, KillcamPlayer } from './killcam.js';
 import { Killstreaks, STREAKS, TEAM_STRIKE } from './killstreaks.js';
-import { clamp, lerp, damp, dampAngle, wrapPi, makeRng, callsign, fmtTime } from '../core/util.js';
+import { MELEE_DUR, MELEE_HIT_K, clamp, lerp, damp, dampAngle, wrapPi, makeRng, callsign, fmtTime } from '../core/util.js';
 
 const RADIUS = 0.36;
 const HEIGHT_STAND = 1.80, HEIGHT_CROUCH = 1.22;
@@ -56,7 +56,7 @@ class Actor {
     this.cookT = 0; this.cooking = false;
     this.slot = 'primary';
     this.swapT = 0; this.swapDur = 0; this.swapTo = null;
-    this.meleeT = 0;
+    this.meleeT = 0; this.meleeDur = MELEE_DUR; this.meleeSeq = 0;
     this.char = null;
     this.bot = null;
     this.streakEarned = new Set();
@@ -69,6 +69,10 @@ class Actor {
 }
 
 /* ============================================================================ */
+/* Where on a body a swing can land: hit zone, height above the feet standing. */
+const MELEE_POINTS = [['head', 1.62], ['chest', 1.28], ['gut', 0.98]];
+const MELEE_DAMAGE = 150;      // one hit, as everywhere in the genre
+
 export class Game {
   constructor(deps) {
     Object.assign(this, deps);   // scene, camera, renderer, map, audio, effects, hud, input, viewmodel
@@ -216,6 +220,7 @@ export class Game {
 
   /* ================================================================ spawn */
   spawn(a, initial) {
+    a.meleeT = 0; a.meleeSeq++;
     const enemies = this.actors.filter(o => o.team !== a.team);
     const friends = this.actors.filter(o => o.team === a.team && o !== a);
     const s = this.map.pickSpawn(a.team, enemies, friends);
@@ -358,9 +363,9 @@ export class Game {
     const canStand = this.headroom(a, HEIGHT_STAND);
     a.crouch = damp(a.crouch, (wantCrouch || !canStand) ? 1 : 0, 12, dt);
     const W = a.weapon;
-    const sprinting = wantSprint && !wantAds && a.grounded && !W.reloading && a.crouch < 0.4;
+    const sprinting = wantSprint && !wantAds && a.grounded && !W.reloading && a.crouch < 0.4 && a.meleeT <= 0;
     a.sprint = damp(a.sprint, sprinting ? 1 : 0, sprinting ? 9 : 14, dt);
-    const adsAllowed = !sprinting && a.swapT <= 0;
+    const adsAllowed = !sprinting && a.swapT <= 0 && a.meleeT <= 0;
     const adsRate = 1 / Math.max(0.05, W.def.ads.time);
     a.adsW = clamp(a.adsW + ((wantAds && adsAllowed) ? 1 : -1.35) * adsRate * dt, 0, 1);
 
@@ -428,6 +433,7 @@ export class Game {
       c.reloading = W.reloading;
       c.reloadT = W.reloading ? clamp(W.reloadT / Math.max(0.01, W.reloadDur), 0, 1) : 0;
       c.recoilKick = W.visualKick;
+      c.meleeK = a.meleeT > 0 ? 1 - a.meleeT / a.meleeDur : 0;
       c.update(dt, this.camera.position);
       if (c.footstepPending) {
         c.footstepPending = false;
@@ -707,6 +713,17 @@ export class Game {
     victim.streak = 0;
     victim.respawnT = victim.isLocal ? 99 : this.rng.range(3.0, 5.5);
     if (victim.char) victim.char.kill(dir || this._v.set(0, 0, 1), headshot);
+    /* once the body has come to rest, blood pools out from under the hips */
+    if (victim.char) {
+      const c = victim.char;
+      this.after(1.0, () => {
+        if (victim.alive || !this.effects) return;
+        const p = this._poolP || (this._poolP = new THREE.Vector3());
+        const hips = c.bone && c.bone('Hips');
+        if (hips) hips.getWorldPosition(p); else p.copy(victim.pos);
+        this.effects.bloodPool(p);
+      });
+    }
     this.audio.play('death', { pos: [victim.pos.x, victim.pos.y + 1, victim.pos.z], vol: 0.5 });
 
     if (killer && killer !== victim) {
@@ -898,11 +915,8 @@ export class Game {
     }
 
     /* melee */
-    if (I.hit('melee') && a.meleeT <= 0) {
-      a.meleeT = 0.55;
-      this.doMelee(a);
-    }
-    if (a.meleeT > 0) a.meleeT -= dt;
+    if (I.hit('melee') && a.meleeT <= 0 && a.swapT <= 0 && !a.cooking) this.startMelee(a);
+    if (a.meleeT > 0) a.meleeT = Math.max(0, a.meleeT - dt);
 
     /* hold breath */
     W.holdingBreath = I.down('hold') && a.adsW > 0.6 && !!W.def.sway;
@@ -933,25 +947,87 @@ export class Game {
     }
   }
 
-  doMelee(a) {
+  /* ---------------------------------------------------------------- melee */
+
+  /**
+   * Start a swing. The hit is not resolved on the key press but at the point
+   * in the animation where the weapon arrives — MELEE_HIT_K of the way through
+   * — so what you see connect is what connects.
+   */
+  startMelee(a) {
+    const W = a.weapon;
+    if (W.reloading) W.interruptReload();       // drop the reload and swing
+    a.meleeT = a.meleeDur = MELEE_DUR;
+    const seq = ++a.meleeSeq;
+    if (a.isLocal) this.audio.play('melee_swing', { vol: 0.55, reverb: 0.05 });
+    else this.audio.play('melee_swing', { pos: [a.pos.x, a.pos.y + 1.3, a.pos.z], vol: 0.8 });
+    this.after(MELEE_DUR * MELEE_HIT_K, () => {
+      if (!a.alive || a.meleeSeq !== seq || this.state !== STATE.LIVE) return;
+      this.resolveMelee(a);
+    });
+  }
+
+  /**
+   * Who does the swing connect with?
+   *
+   * The first version fired one infinitely thin ray down the crosshair, 2.1 m
+   * long. Measured, a target 0.25 m off-centre at arm's length — about 12° —
+   * was a miss, and so was looking up at someone's head: melee only worked
+   * with pixel-perfect aim, and a miss gave nothing back but a click. A swing
+   * sweeps an arc, so this tests a cone: each enemy's head, chest and hips,
+   * within reach, inside ~28° of where you are looking, with nothing solid in
+   * between. The most centred candidate wins.
+   */
+  resolveMelee(a) {
+    const REACH = 2.3, CONE = Math.cos(28 * Math.PI / 180);
     const cy = Math.cos(a.yaw), sy = Math.sin(a.yaw);
     const cp = Math.cos(a.pitch), sp = Math.sin(a.pitch);
-    this._dir.set(sy * cp, sp, cy * cp).normalize();
-    this._eye.set(a.pos.x, a.pos.y + a.eyeY, a.pos.z);
-    let best = null, bestT = 2.1;
+    const dir = this._dir.set(sy * cp, sp, cy * cp).normalize();
+    const eye = this._eye.set(a.pos.x, a.pos.y + a.eyeY, a.pos.z);
+    const M = this.map;
+    let best = null, bestScore = -Infinity;
     for (const o of this.actors) {
-      if (o === a || !o.alive || o.team === a.team) continue;
-      const h = o.char.raycastZones(this._eye.x, this._eye.y, this._eye.z,
-        this._dir.x, this._dir.y, this._dir.z, bestT, {});
-      if (h) { bestT = h.t; best = { o, h }; }
+      if (o === a || !o.alive || o.team === a.team || o.inGunner) continue;
+      if (Math.hypot(o.pos.x - eye.x, o.pos.z - eye.z) > REACH + 0.5) continue;
+      for (const [zone, h] of MELEE_POINTS) {
+        const y = o.pos.y + h * (1 - (o.crouch || 0) * 0.32);
+        const vx = o.pos.x - eye.x, vy = y - eye.y, vz = o.pos.z - eye.z;
+        const d = Math.hypot(vx, vy, vz);
+        if (d > REACH || d < 1e-3) continue;
+        const c = (vx * dir.x + vy * dir.y + vz * dir.z) / d;
+        if (c < CONE) continue;
+        if (!M.lineOfSight(eye.x, eye.y, eye.z, o.pos.x, y, o.pos.z)) continue;
+        const score = c - d * 0.04;
+        if (score > bestScore) { bestScore = score; best = { o, zone, x: o.pos.x, y, z: o.pos.z }; }
+      }
     }
+
+    const hitDir = this._mDir || (this._mDir = new THREE.Vector3());
+    const hitPos = this._mPos || (this._mPos = new THREE.Vector3());
     if (best) {
-      this.applyDamage(best.o, 150, a, 'MELEE', false, this._dir.clone(), best.h.zone);
-      this.audio.play('imp_flesh', { vol: 0.8 });
-      if (a.isLocal) this.hud.hitmarker(false, !best.o.alive);
-    } else {
-      this.audio.play('mech_swap', { vol: 0.4 });
+      const o = best.o;
+      hitDir.set(best.x - eye.x, 0, best.z - eye.z).normalize();
+      hitPos.set(best.x, best.y, best.z);
+      this.applyDamage(o, MELEE_DAMAGE, a, 'MELEE', false, hitDir, best.zone);
+      this.effects.bloodHit(hitPos, hitDir, false);
+      this.audio.play('melee_hit', { pos: [best.x, best.y, best.z], vol: a.isLocal ? 1.0 : 0.9, reverb: 0.1 });
+      if (a.isLocal) {
+        this.hud.hitmarker(false, !o.alive);
+        this.camShake = Math.min(1.6, this.camShake + 0.35);
+      }
+      return true;
     }
+
+    /* nobody in the arc — but a wall within reach still takes the blow */
+    const wh = M.raycast(eye.x, eye.y, eye.z, dir.x, dir.y, dir.z, 1.7, this._mh || (this._mh = {}));
+    if (wh) {
+      hitPos.set(wh.px, wh.py, wh.pz);
+      hitDir.set(wh.nx, wh.ny, wh.nz);
+      this.effects.impact(hitPos, hitDir, wh.surface, false);
+      this.audio.play('imp_' + wh.surface, { pos: [wh.px, wh.py, wh.pz], vol: 0.7, reverb: 0.2 });
+      if (a.isLocal) this.camShake = Math.min(1.6, this.camShake + 0.18);
+    }
+    return false;
   }
 
   footstep(a) {

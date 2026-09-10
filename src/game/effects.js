@@ -13,9 +13,14 @@
    ========================================================================== */
 import * as THREE from 'three';
 import { makeRng, clamp, lerp } from '../core/util.js';
-import { makeBlobTexture, makeFlashTexture, makeImpactTexture } from '../world/textures.js';
+import { makeBlobTexture, makeFlashTexture, makeImpactTexture, makeBloodAtlas } from '../world/textures.js';
 
 const rng = makeRng(0xEFFEC7);
+
+/* Blood: every mark is gone BLOOD_LIFE seconds after it lands, fading over the
+   last BLOOD_FADE. Atlas tile offsets are in UV space (the canvas is flipped). */
+const BLOOD_LIFE = 5.0, BLOOD_FADE = 1.5;
+const BLOOD_TILES = [[0, 0.5], [0.5, 0.5], [0, 0], [0.5, 0]];
 
 /* ---- particle shader ----------------------------------------------------- */
 const PARTICLE_VS = `
@@ -167,6 +172,47 @@ export class Effects {
     scene.add(this.decals);
     this.dcIdx = 0;
 
+    /* ---- blood decals ----
+       Kept apart from the bullet holes because blood is lit and wet: a standard
+       material at low roughness, so it goes dark in shade and catches a sheen in
+       the sun, where an unlit decal would glow. Per-instance fade and atlas tile
+       are injected into the standard shader rather than writing a new one, so
+       fog, tone mapping and shadows stay consistent with the world. */
+    this.blood = true;
+    this.map = null;
+    this.BN = 128;
+    const bgeo = new THREE.PlaneGeometry(1, 1);
+    this.bFade = new THREE.InstancedBufferAttribute(new Float32Array(this.BN), 1).setUsage(THREE.DynamicDrawUsage);
+    this.bTile = new THREE.InstancedBufferAttribute(new Float32Array(this.BN * 2), 2).setUsage(THREE.DynamicDrawUsage);
+    bgeo.setAttribute('aFade', this.bFade);
+    bgeo.setAttribute('aTile', this.bTile);
+    this.bloodMat = new THREE.MeshStandardMaterial({
+      map: makeBloodAtlas(), transparent: true, depthWrite: false,
+      roughness: 0.26, metalness: 0.0,
+      polygonOffset: true, polygonOffsetFactor: -5, polygonOffsetUnits: -5,
+    });
+    this.bloodMat.onBeforeCompile = (sh) => {
+      sh.vertexShader = sh.vertexShader
+        .replace('#include <common>', '#include <common>\nattribute float aFade;\nattribute vec2 aTile;\nvarying float vFade;')
+        .replace('#include <uv_vertex>', '#include <uv_vertex>\nvMapUv = vMapUv * 0.5 + aTile;\nvFade = aFade;');
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <common>', '#include <common>\nvarying float vFade;')
+        .replace('#include <map_fragment>', '#include <map_fragment>\ndiffuseColor.a *= vFade;');
+    };
+    this.bloodMesh = new THREE.InstancedMesh(bgeo, this.bloodMat, this.BN);
+    this.bloodMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.bloodMesh.frustumCulled = false;
+    this.bloodMesh.renderOrder = 3;
+    this.bloodMesh.receiveShadow = true;
+    for (let i = 0; i < this.BN; i++) this.bloodMesh.setMatrixAt(i, zero);
+    scene.add(this.bloodMesh);
+    this.bSlots = [];
+    for (let i = 0; i < this.BN; i++) {
+      this.bSlots.push({ i, live: false, t: 0, grow: 0, size: 1, stretch: 1, alpha: 1,
+        p: new THREE.Vector3(), q: new THREE.Quaternion() });
+    }
+    this.bIdx = 0; this.bLive = 0;
+
     /* ---- shell casings ---- */
     this.SH = 56;
     const shGeo = new THREE.CylinderGeometry(0.0045, 0.005, 0.024, 6);
@@ -293,25 +339,124 @@ export class Effects {
     }
   }
 
+  /* ------------------------------------------------------------------ blood */
+
+  /**
+   * A round (or a rifle butt) meets a body.
+   *
+   * With blood on: a short mist back toward the shooter at the entry, a cone of
+   * droplets out along the travel that falls under gravity, a splatter decal on
+   * whatever surface is behind the target inside 2.4 m, stretched along the
+   * travel so a grazing wall gets a streak and a square hit gets a burst, and
+   * drips on the ground below. Everything it leaves is gone in BLOOD_LIFE s.
+   *
+   * With blood off: a small grey puff of fabric, so a hit still reads.
+   */
   bloodHit(pos, dir, headshot) {
-    const n = headshot ? 22 : 12;
-    for (let i = 0; i < n; i++) {
-      this.debris.spawn(pos.x, pos.y, pos.z,
-        dir.x * rng.range(1, 5) + rng.gauss() * 1.5,
-        dir.y * rng.range(0, 3) + rng.gauss() * 1.5 + 0.6,
-        dir.z * rng.range(1, 5) + rng.gauss() * 1.5,
-        rng.range(0.25, 0.6), 0.045, 0.012,
-        [0.55, 0.03, 0.02, 0.95], [0.28, 0.02, 0.01, 0], 8);
+    if (!this.blood) {
+      for (let i = 0; i < 5; i++) {
+        this.debris.spawn(pos.x, pos.y, pos.z,
+          dir.x * rng.range(0.4, 1.4) + rng.gauss() * 0.5, rng.gauss() * 0.5 + 0.4,
+          dir.z * rng.range(0.4, 1.4) + rng.gauss() * 0.5,
+          rng.range(0.25, 0.45), 0.05, 0.16,
+          [0.46, 0.44, 0.40, 0.45], [0.40, 0.38, 0.35, 0], 0.8);
+      }
+      return;
     }
-    // fine mist
-    for (let i = 0; i < (headshot ? 10 : 5); i++) {
+    const big = headshot ? 1.7 : 1;
+    for (let i = 0; i < 6 * big; i++) {
       this.debris.spawn(pos.x, pos.y, pos.z,
-        dir.x * rng.range(0.5, 2) + rng.gauss(), dir.y * 0.8 + rng.gauss() + 0.4,
-        dir.z * rng.range(0.5, 2) + rng.gauss(),
-        rng.range(0.3, 0.7), 0.10, 0.30,
-        [0.42, 0.04, 0.03, 0.42], [0.30, 0.03, 0.02, 0], 1.0);
+        -dir.x * rng.range(0.3, 1.2) + rng.gauss() * 0.5, rng.gauss() * 0.5 + 0.3,
+        -dir.z * rng.range(0.3, 1.2) + rng.gauss() * 0.5,
+        rng.range(0.18, 0.35), 0.06, 0.20,
+        [0.36, 0.02, 0.02, 0.50], [0.22, 0.01, 0.01, 0], 1.5);
+    }
+    for (let i = 0; i < 16 * big; i++) {
+      const s = rng.range(1.5, 6.0);
+      this.debris.spawn(pos.x, pos.y, pos.z,
+        dir.x * s + rng.gauss() * 1.1, dir.y * s + rng.gauss() * 1.0 + 0.5,
+        dir.z * s + rng.gauss() * 1.1,
+        rng.range(0.35, 0.75), rng.range(0.018, 0.04), 0.010,
+        [0.40, 0.02, 0.02, 0.95], [0.20, 0.01, 0.01, 0.6], 9.8);
+    }
+    for (let i = 0; i < 5 * big; i++) {
+      this.debris.spawn(pos.x, pos.y, pos.z,
+        dir.x * rng.range(0.6, 2.0) + rng.gauss() * 0.6, rng.gauss() * 0.5 + 0.2,
+        dir.z * rng.range(0.6, 2.0) + rng.gauss() * 0.6,
+        rng.range(0.4, 0.8), 0.08, 0.34,
+        [0.30, 0.02, 0.02, 0.35], [0.20, 0.01, 0.01, 0], 0.6);
+    }
+    if (!this.map) return;
+    const M = this.map, h = this._bh || (this._bh = {});
+    for (let k = 0; k < (headshot ? 2 : 1); k++) {
+      const jx = dir.x + rng.gauss() * 0.12, jy = dir.y + rng.gauss() * 0.10 - 0.08, jz = dir.z + rng.gauss() * 0.12;
+      const jl = Math.hypot(jx, jy, jz) || 1;
+      const wh = M.raycast(pos.x, pos.y, pos.z, jx / jl, jy / jl, jz / jl, 2.4, h);
+      if (!wh || wh.surface === 'glass') continue;
+      const graze = 1 - Math.abs((jx * wh.nx + jy * wh.ny + jz * wh.nz) / jl);
+      const falloff = 1 - (wh.t / 2.4) * 0.5;
+      this._bloodDecal(wh.px, wh.py, wh.pz, wh.nx, wh.ny, wh.nz, graze > 0.45 ? 1 : 0,
+        rng.range(0.42, 0.70) * big * falloff, 1 + graze * 1.6, jx, jy, jz, 0, 0.92);
+    }
+    const gd = M.raycast(pos.x + dir.x * 0.25, pos.y, pos.z + dir.z * 0.25, 0, -1, 0, 3.0, h);
+    if (gd) {
+      this._bloodDecal(gd.px, gd.py, gd.pz, gd.nx, gd.ny, gd.nz, 3,
+        rng.range(0.28, 0.44) * big, 1, rng.gauss(), 0, rng.gauss(), 0, 0.85);
     }
   }
+
+  /** A body has come to rest: blood pools out beneath it over 1.6 s. */
+  bloodPool(pos) {
+    if (!this.blood || !this.map) return;
+    const h = this._bh || (this._bh = {});
+    const g = this.map.raycast(pos.x, pos.y + 0.4, pos.z, 0, -1, 0, 2.5, h);
+    if (!g || g.ny < 0.6) return;
+    this._bloodDecal(g.px, g.py, g.pz, g.nx, g.ny, g.nz, 2,
+      rng.range(1.0, 1.35), rng.range(1.0, 1.3), rng.gauss(), 0, rng.gauss(), 1.6, 0.95);
+  }
+
+  _bloodDecal(px, py, pz, nx, ny, nz, tile, size, stretch, ax, ay, az, grow, alpha) {
+    const b = this.bSlots[this.bIdx = (this.bIdx + 1) % this.BN];
+    if (!b.live) this.bLive++;
+    b.live = true; b.t = 0; b.grow = grow; b.size = size; b.stretch = stretch; b.alpha = alpha;
+    /* +Z on the surface normal, +X along the travel projected onto the surface */
+    const n = this._bn || (this._bn = new THREE.Vector3());
+    const x = this._bx || (this._bx = new THREE.Vector3());
+    const y = this._by || (this._by = new THREE.Vector3());
+    n.set(nx, ny, nz).normalize();
+    x.set(ax, ay, az).addScaledVector(n, -(ax * n.x + ay * n.y + az * n.z));
+    if (x.lengthSq() < 1e-6) x.set(1, 0, 0).addScaledVector(n, -n.x);
+    if (x.lengthSq() < 1e-6) x.set(0, 0, 1);
+    x.normalize();
+    y.crossVectors(n, x);
+    this._m.makeBasis(x, y, n);
+    b.q.setFromRotationMatrix(this._m);
+    b.p.set(px + n.x * 0.006, py + n.y * 0.006, pz + n.z * 0.006);
+    const TO = BLOOD_TILES[tile];
+    this.bTile.array[b.i * 2] = TO[0]; this.bTile.array[b.i * 2 + 1] = TO[1];
+    this.bTile.needsUpdate = true;
+    this.bFade.array[b.i] = alpha; this.bFade.needsUpdate = true;
+    this._bloodMatrix(b);
+    this.bloodMesh.instanceMatrix.needsUpdate = true;
+  }
+
+  _bloodMatrix(b) {
+    const g = b.grow > 0 ? 0.22 + 0.78 * (1 - Math.pow(1 - Math.min(1, b.t / b.grow), 2.2)) : 1;
+    const s = b.size * g;
+    this._m.compose(b.p, b.q, this._s.set(s * b.stretch, s, 1));
+    this.bloodMesh.setMatrixAt(b.i, this._m);
+  }
+
+  clearBlood() {
+    const zero = this._zeroM || (this._zeroM = new THREE.Matrix4().makeScale(0, 0, 0));
+    for (const b of this.bSlots) { b.live = false; this.bloodMesh.setMatrixAt(b.i, zero); this.bFade.array[b.i] = 0; }
+    this.bLive = 0;
+    this.bloodMesh.instanceMatrix.needsUpdate = true;
+    this.bFade.needsUpdate = true;
+  }
+
+  /** The settings toggle. Switching blood off also wipes whatever is on the map. */
+  setBlood(on) { this.blood = !!on; if (!this.blood) this.clearBlood(); }
 
   shellEject(pos, dir, up, small) {
     const s = this.shells[this.shIdx = (this.shIdx + 1) % this.SH];
@@ -371,6 +516,29 @@ export class Effects {
   update(dt, map) {
     this.sparks.update(dt);
     this.debris.update(dt);
+    if (map) this.map = map;
+
+    /* blood: every mark lives BLOOD_LIFE seconds, full and then drying away
+       over the last BLOOD_FADE, and pools spread out as they appear */
+    if (this.bLive > 0) {
+      let dirty = false;
+      for (const b of this.bSlots) {
+        if (!b.live) continue;
+        b.t += dt;
+        if (b.t >= BLOOD_LIFE) {
+          b.live = false; this.bLive--;
+          this.bFade.array[b.i] = 0;
+          this.bloodMesh.setMatrixAt(b.i, this._zeroM || (this._zeroM = new THREE.Matrix4().makeScale(0, 0, 0)));
+          dirty = true;
+          continue;
+        }
+        const f = b.t < BLOOD_LIFE - BLOOD_FADE ? 1 : (BLOOD_LIFE - b.t) / BLOOD_FADE;
+        this.bFade.array[b.i] = b.alpha * f;
+        if (b.grow > 0 && b.t < b.grow + 0.05) { this._bloodMatrix(b); dirty = true; }
+      }
+      this.bFade.needsUpdate = true;
+      if (dirty) this.bloodMesh.instanceMatrix.needsUpdate = true;
+    }
 
     /* tracers */
     let any = false;
@@ -474,6 +642,7 @@ export class Effects {
     this.shellMesh.instanceMatrix.needsUpdate = true;
     for (const s of this.sprites) { s.live = false; s.m.visible = false; }
     for (const l of this.lights) { l.L.visible = false; l.L.intensity = 0; }
+    this.clearBlood();
   }
 }
 

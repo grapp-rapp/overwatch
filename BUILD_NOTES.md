@@ -340,8 +340,9 @@ and real stride, not as primitives, and nothing slides without moving its legs.
 Stated plainly rather than buried:
 
 - **The maximum roster does not hold 60 fps** in this environment (~44 fps at 15
-  actors, all firing every frame). The default 9-actor configuration does, at
-  75 fps median. The hostile-count slider goes to 9 and the honest answer is
+  actors, all firing every frame). The default 9-actor configuration measured
+  75 fps median at the time; a 2026-09-10 re-measurement at a true 1080p did
+  not reproduce that (see Frame time, re-measured, at the end). The hostile-count slider goes to 9 and the honest answer is
   that the top of that range costs frame rate.
 - **The QA walker fails 6 of 66 route legs.** The routes exist and the map has no
   wedges; the failures are the test's steering, not the level.
@@ -534,5 +535,169 @@ side's strike, and the first version of it quietly poisoned every test that ran
 after it.
 
 **Full suite: 13 of 13 pass.** Cold boot 3.8–4.7 s. Frame time at the default
-9 actors: 9.07 ms median, 109 fps, 250 draw calls, 182k triangles. Full match
+9 actors: 9.07 ms median - but measured at the preview pane size, not 1080p; see Frame time, re-measured, at the end. Full match
 7,830 frames, 20–17 VICTORY.
+
+---
+
+## Melee: it was there, it just almost never landed
+
+Reported: *"melee doesn't work."*
+
+The key was bound and a handler ran on every press. The old control check even
+logged `melee: meleeT active` - the same mistake as the strafe test: it checked
+that the timer started, not that anything got hit.
+
+Measured with an enemy staged in front and V pressed through the real input
+layer, the original version landed **6 of 10** swings. It fired one infinitely
+thin ray, 2.1 m long, down the crosshair. A target 0.25 m off-centre at arm's
+length (about 12 degrees) was a miss, and so was looking slightly up at a head.
+There was no swing animation at all, and a miss played a quiet click - so from
+the player's side, pressing V did nothing.
+
+**What changed**
+
+- **A cone, not a ray.** `resolveMelee()` tests each enemy's head, chest and
+  hips: within 2.3 m of the eye, inside 28 degrees of the look direction, with
+  clear line of sight so nothing lands through a wall. Most centred wins.
+- **The hit lands at contact.** `startMelee()` plays the swing and resolves it
+  `MELEE_HIT_K` of the way through (0.156 s), where the weapon arrives.
+- **A real swing.** `meleeCurve()` in `util.js` is one wind-up/strike curve
+  shared by the viewmodel and the third-person body, so the swing you see is the
+  swing the killcam shows.
+- **Feedback.** Two new synthesised sounds: a whoosh on every swing (noise
+  through a state-variable band-pass swept with the swing's speed - the existing
+  biquad resets when retuned, and clicked) and a thud on a hit. Hitmarker and a
+  camera punch on contact; a swing into a wall sparks and sounds like the wall.
+- **It behaves like a melee.** It breaks sprint, drops the sights, and aborts a
+  reload. `interruptReload()` is new on `WeaponState`: rounds only move into the
+  magazine when a reload completes, so abandoning one costs time, never ammo.
+
+**Verified**, through the real input layer:
+
+| | result |
+|---|---|
+| Should connect: centre, 12 and 21 degrees off, looking up, 0.8-2.2 m, crouched target | **12 / 12** |
+| Should miss: 2.9 m away, 40 degrees off, looking at the sky | **3 / 3 missed** |
+| Swing through a wall | **missed** |
+| Key press to damage | **183 ms** |
+| Melee mid-reload | reload aborted; magazine 10, reserve 210 unchanged |
+
+`testMelee()` asserts all of it as part of `runAll()`.
+
+---
+
+## Blood, with a toggle
+
+Requested: a toggle for realistic blood that goes away after 5 seconds.
+
+**BLOOD** is a new settings checkbox, on by default. Every body hit - bullet or
+melee - goes through `effects.bloodHit()`, so the toggle lives there.
+
+With blood on, a hit produces:
+
+- **Spray.** A short mist back toward the shooter, a cone of droplets out along
+  the round's path that falls under gravity, and a slower fine mist.
+- **Splatter on the world.** A ray from the wound along the round's path; a
+  surface within 2.4 m gets a splatter decal stretched along the travel - a
+  square hit leaves a burst, a grazing one a streak. Plus drips on the ground.
+- **A pool under the body** once it has come to rest - a second after the kill,
+  under the hips - spreading out over 1.6 s.
+
+Every mark holds for 3.5 s, fades over the last 1.5 s, and is gone at 5.0 s.
+
+It is built to look like blood rather than red paint. The decals use a lit,
+low-roughness standard material, so blood goes dark in shade and takes a wet
+sheen in the sun, where an unlit decal glows. The procedural atlas colours each
+pixel by thickness: nearly black where it is deep, thin bright red only at the
+edge. Per-instance fade and atlas tile are injected into the standard shader
+rather than a custom one, so fog, tone mapping and shadows match the world.
+
+With blood off a hit shows a small grey puff of fabric, so it still reads, and
+switching off mid-match wipes everything already on the map.
+
+**Verified**, through the real checkbox:
+
+| | result |
+|---|---|
+| 3 hits in front of a wall | 6 marks: 3 on the wall, 3 on the ground |
+| One wall mark's opacity at 3.0 / 4.5 / 5.05 s | **0.92 / 0.30 / gone** |
+| A kill | a pool under the body, gone 5 s later |
+| Checkbox off | 2 marks on the map -> 0; a hit while off leaves 0 |
+
+`testBlood()` asserts all ten of these as part of `runAll()`.
+
+### A tooling note
+
+Three file writes in this pass failed with the same shell error - `unexpected
+EOF while looking for matching '` - and wrote nothing. The only thing they had
+in common was size: each was a single shell command over about 8 KB, and every
+write under that size succeeded. Splitting them up fixed it.
+
+---
+
+## Frame time, re-measured - and two measurement errors of my own
+
+Checking whether blood costs frame rate turned up two frame-time numbers in
+these notes that were not measuring what they said.
+
+**1. The "109 fps" in the airstrike section was not 1080p.** It was taken on a
+fresh page in the preview pane, and the pane renders at its own size - roughly
+800 px wide - not 1920x1080, which is the brief's target.
+
+**2. The suite's frame-time line had been passing without drawing anything.**
+`runAll()` switches rendering off to run fast, and `testPerformance()` passed on
+mean frame time alone, so inside the suite it timed the simulation (0 draw
+calls, 0 triangles) and reported a pass. It now forces rendering on and the
+renderer to 1920x1080 for the measurement, restores both afterwards, and will
+not pass if nothing was drawn.
+
+A third trap made the numbers jump around: the screenshot tool resized the real
+renderer and never put it back, so a measurement taken after a capture was at
+1080p and one taken before it was not. `restoreCaptureSize()` now exists.
+
+**Measured properly** - fresh load, renderer at 1920x1080, 9 actors, every bot
+firing every frame, blood on / off / on in one session:
+
+| Run | Median | p95 | Draw calls |
+|---|---|---|---|
+| Blood on | 18.9 ms (53 fps) | 36.2 ms | 251 |
+| Blood off | 23.8 ms (42 fps) | 33.3 ms | 250 |
+| Blood on | 22.2 ms (45 fps) | 34.1 ms | 201 |
+
+- **Blood costs nothing measurable.** The blood-off run was the slowest of the
+  three; the run-to-run spread is bigger than anything blood does. It is one
+  extra draw call.
+- **At a true 1920x1080 this does not hold 60 fps today** - 42 to 53 fps median.
+  Section 3 recorded 13.3 ms (75 fps) at 1080p. These numbers cannot say whether
+  that is a real regression or this environment: section 3 already notes
+  identical renders here varying by +/-50%, and today's view had more of the map
+  in frame (182k triangles against 135k). What they do say is that 60 fps at
+  1080p cannot be claimed on this measurement. Treat it as open.
+
+### Test isolation, and where the suite stands
+
+One more flake turned up on a re-run: **team airstrike** failed once, having
+passed every run before. Its strike call had been refused. A strike can only be
+called in a live match with the player alive, and the player had been shot
+during the controls test just before it - which left the bots active - and was
+watching a killcam. The game was right; the test was not isolated.
+`ensureLive()` in the harness now ends any killcam through the game's own
+`endKillcam()`, respawns the player through `spawn()`, starts a fresh match if
+the last one ended, and yields once for the pointer-lock refusal. It runs at the
+start of the controls, airstrike, melee and blood tests and before the
+frame-time run, and the controls test now holds the bots inert while it probes.
+
+**Two fresh-load runs of `runAll()`, identical results: 14 of 15 pass.** Every
+functional test passes on both - including team airstrike, melee and blood.
+
+The one failure is frame time, now a real rendered 1920x1080 measurement:
+
+| Run | Mean | Median | p95 | Draw calls |
+|---|---|---|---|---|
+| 1 | 17.6 ms | 11.1 ms | 38.2 ms | 103 |
+| 2 | 17.9 ms | 14.7 ms | 30.4 ms | 119 |
+
+A typical frame fits the 16.7 ms budget; the mean does not, because of a heavy
+tail of 30-38 ms frames. Against "a locked 60 fps at 1080p" that is a fail, and
+it is recorded as one. It is tracked as separate follow-up work.

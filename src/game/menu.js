@@ -82,7 +82,7 @@ export class Menu {
       enemies: 5, friends: 3, scoreLimit: 30, timeLimit: 10, difficulty: 1,
       primary: 'vk71', secondary: 'm9', lethal: 'frag',
       device: 'mouse', sensitivity: 1.0, adsMult: 0.75, fov: 85, volume: 0.7,
-      invert: false, holdAds: true, holdSprint: true, shadows: true,
+      invert: false, holdAds: true, holdSprint: true, shadows: true, blood: true,
     };
     this.selected = 'vk71';
     this.detailYaw = 0.7;
@@ -155,6 +155,7 @@ export class Menu {
     };
     tg('tgInvert', 'invert'); tg('tgHoldAds', 'holdAds');
     tg('tgHoldSprint', 'holdSprint'); tg('tgShadows', 'shadows');
+    tg('tgBlood', 'blood');
 
     $('deployBtn').addEventListener('click', () => this.g.deploy());
     window.addEventListener('keydown', e => {

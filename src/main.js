@@ -141,6 +141,7 @@ async function main() {
     else if (key === 'invert') input.invert = v;
     else if (key === 'holdAds') input.holdAds = v;
     else if (key === 'holdSprint') input.holdSprint = v;
+    else if (key === 'blood') game.effects && game.effects.setBlood(v);
     else if (key === 'shadows') { renderer.shadowMap.enabled = v; scene.traverse(o => { if (o.isMesh) o.material && (o.material.needsUpdate = true); }); }
   };
   input.sensitivity = menu.cfg.sensitivity;
@@ -294,6 +295,7 @@ async function main() {
         hidden: viewmodel.hidden || !me.alive || me.inGunner || game.state === STATE.KILLCAM,
         boltT: W.bolting ? W.boltT : 0, boltDur: W.def.boltTime || 1,
         magEmpty: W.mag <= 0, sunDirCam: sunCamDir,
+        melee: me.meleeT > 0 ? 1 - me.meleeT / (me.meleeDur || 0.6) : 0,
       });
     }
 

@@ -275,6 +275,60 @@ function renderMech(kind, seed) {
   return out;
 }
 
+/* Melee swing: a rifle moved fast through air. Noise through a band-pass whose
+   centre rises as the swing accelerates and falls away as it slows, over a low
+   rustle of sling and cloth. No tone — a real whoosh has none. The Biquad
+   resets its state when retuned, so the sweep uses a state-variable filter,
+   which can be retuned every sample without clicking. */
+function renderSwing(seed) {
+  const r = makeRng(seed);
+  const N = Math.ceil(0.26 * SR);
+  const out = new Float32Array(N);
+  const f0 = 320 * (1 + (r() - 0.5) * 0.2), f1 = 1900 * (1 + (r() - 0.5) * 0.25);
+  const peakT = 0.095 + (r() - 0.5) * 0.02;
+  const lp = new Biquad().lowpass(700, 0.7);
+  let low = 0, band = 0;
+  for (let i = 0; i < N; i++) {
+    const t = i / SR;
+    const v = t < peakT ? Math.sin((t / peakT) * Math.PI / 2) : Math.exp(-(t - peakT) / 0.05);
+    const f = 2 * Math.sin(Math.PI * (f0 + (f1 - f0) * v) / SR);
+    const damp = 1 / (1.2 + v * 1.4);
+    low += f * band;
+    const high = (r() * 2 - 1) - low - damp * band;
+    band += f * high;
+    out[i] = band * v * 0.9 + lp.run(r() * 2 - 1) * v * v * 0.25;
+  }
+  let peak = 0; for (let i = 0; i < N; i++) peak = Math.max(peak, Math.abs(out[i]));
+  if (peak > 0) for (let i = 0; i < N; i++) out[i] = softClip(out[i] * 0.6 / peak);
+  return out;
+}
+
+/* Melee connect: a rifle butt into a plate carrier. A pitch-dropping chest
+   thump, a short dull smack, the fabric-and-flesh body under it, and the kit
+   rattling a beat later. */
+function renderMeleeHit(seed) {
+  const r = makeRng(seed);
+  const N = Math.ceil(0.32 * SR);
+  const out = new Float32Array(N);
+  const body = 62 * (1 + (r() - 0.5) * 0.15);
+  const smack = new Biquad().bandpass(1100 * (1 + (r() - 0.5) * 0.3), 0.9);
+  const lp = new Biquad().lowpass(420, 0.8);
+  const gear = new Biquad().bandpass(2600 * (1 + (r() - 0.5) * 0.2), 2.2);
+  let ph = 0;
+  for (let i = 0; i < N; i++) {
+    const t = i / SR;
+    ph += 2 * Math.PI * body * (1 + 1.8 * Math.exp(-t / 0.012)) / SR;
+    out[i] += Math.sin(ph) * Math.exp(-t / 0.075);
+    out[i] += smack.run(r() * 2 - 1) * Math.exp(-t / 0.016) * 0.9;
+    out[i] += lp.run(r() * 2 - 1) * Math.exp(-t / 0.045) * 0.6;
+    const gt = t - 0.018;
+    if (gt > 0) out[i] += gear.run(r() * 2 - 1) * Math.exp(-gt / 0.02) * 0.22;
+  }
+  let peak = 0; for (let i = 0; i < N; i++) peak = Math.max(peak, Math.abs(out[i]));
+  if (peak > 0) for (let i = 0; i < N; i++) out[i] = softClip(out[i] * 0.8 / peak);
+  return out;
+}
+
 function renderWhizby(seed) {
   const r = makeRng(seed);
   const N = Math.ceil(0.22 * SR);
@@ -468,6 +522,8 @@ export class AudioEngine {
       for (const s of ['concrete', 'dirt', 'metal', 'wood', 'glass', 'flesh']) {
         this._mkSet('imp_' + s, [0, 1, 2, 3].map(i => renderImpact(s, 0x600 + i * 53 + s.length * 29)));
       }
+      this._mkSet('melee_swing', [0, 1, 2].map(i => renderSwing(0xA10 + i * 41)));
+      this._mkSet('melee_hit', [0, 1, 2].map(i => renderMeleeHit(0xA40 + i * 47)));
     }]);
     jobs.push(['mech', () => {
       for (const k of ['magout', 'magin', 'bolt', 'shell', 'swap', 'pin', 'dryfire']) {

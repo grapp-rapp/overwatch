@@ -142,3 +142,19 @@ const SUFFIX = ['01', '02', '03', '06', '11', '7', 'X', 'ACTUAL', 'PRIME', '2-1'
 export function callsign(r) {
   return r.pick(FIRST) + '-' + r.pick(SUFFIX);
 }
+
+/* ---- melee swing ---------------------------------------------------------
+   One curve, shared by the first-person viewmodel and the third-person body,
+   so the swing you see and the swing everyone else sees are the same motion.
+   Over normalised time k: `wind` draws the weapon back, `strike` drives it
+   through. The hit resolves at MELEE_HIT_K — just before full extension, which
+   is where contact actually happens. */
+export const MELEE_DUR = 0.60;
+export const MELEE_HIT_K = 0.26;
+export function meleeCurve(k, out = {}) {
+  if (!(k > 0 && k < 1)) { out.wind = 0; out.strike = 0; return out; }
+  const sm = (x) => { x = x < 0 ? 0 : x > 1 ? 1 : x; return x * x * (3 - 2 * x); };
+  out.wind = k < 0.18 ? sm(k / 0.18) : k < 0.30 ? 1 - sm((k - 0.18) / 0.12) : 0;
+  out.strike = k < 0.18 ? 0 : k < 0.30 ? sm((k - 0.18) / 0.12) : 1 - sm((k - 0.30) / 0.70);
+  return out;
+}

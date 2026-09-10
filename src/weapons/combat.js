@@ -84,6 +84,19 @@ export class WeaponState {
     return true;
   }
 
+  /**
+   * Abort any reload outright — magazine or shell-by-shell — keeping what is
+   * already in the gun. A melee does this: you drop the reload and swing, and
+   * have to start it again. Rounds only move from reserve into the magazine
+   * when a magazine reload completes, or one shell at a time, so abandoning a
+   * reload costs time and never ammunition.
+   */
+  interruptReload() {
+    if (!this.reloading) return false;
+    this.reloading = false; this.shellPhase = null; this.reloadT = 0;
+    return true;
+  }
+
   cancelReload() {
     if (!this.reloading) return false;
     // shell-by-shell reloads can be interrupted to fire immediately

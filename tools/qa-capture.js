@@ -144,3 +144,14 @@ export function setCaptureSize(w, h) {
   window.__effects.setPixelScale(h);
   return [R.domElement.width, R.domElement.height];
 }
+
+/**
+ * Put the renderer back to the window's size after a capture session.
+ *
+ * setCaptureSize() resizes the real renderer and nothing reset it: a frame-time
+ * run taken straight after a 1920x1080 capture measured 1920x1080, while the
+ * run before it had measured the window, and the two looked like a regression.
+ */
+export function restoreCaptureSize() {
+  return setCaptureSize(window.innerWidth, window.innerHeight);
+}

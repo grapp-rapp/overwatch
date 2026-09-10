@@ -489,3 +489,110 @@ export const SURFACE_KIND = {
   glass: 'glass', rubber: 'dirt', paintA: 'metal', paintB: 'metal', paintC: 'metal',
   drumA: 'metal', drumB: 'metal',
 };
+
+/* Blood decal atlas - 2 x 2 tiles of 256 px, in canvas order:
+     0 splatter   an impact: a core, satellite drops, short radial streaks
+     1 spray      pushed one way, drops trailing along +X, so an instance turned
+                  to the round's travel reads as directional
+     2 pool       a thick pool with a few drops thrown past its rim
+     3 drips      a scatter of round drops
+   Each tile has two layers. The BODY is drawn as overlapping discs, then its
+   coverage is blurred and re-thresholded: stamped discs leave a scalloped rim
+   that reads as a pattern, and this turns it into one smooth lobed outline,
+   the way surface tension draws a real pool. The DETAIL layer - drops and
+   streaks - stays crisp, because a blur that size would erase it. Colour is
+   then set per pixel from thickness: nearly black where the blood is deep, a
+   thin bright red only at its edges. A flat red fill is what makes game blood
+   read as paint. Content stays clear of each tile's border so lower mips do not
+   bleed one tile into the next. */
+export function makeBloodAtlas() {
+  const T = 256, N = T * 2;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = N;
+  const ctx = cv.getContext('2d');
+  const r = makeRng(0xB100D);
+
+  /* shapes are generated once, so both passes see the same blood */
+  const S = [[], [], [], []];
+  const D = (t, pass, x, y, rad) => S[t].push({ pass, k: 0, a: [x, y, rad] });
+  const L = (t, x, y, ang, len, w) => S[t].push({ pass: 'detail', k: 1, a: [x, y, ang, len, w] });
+  for (let k = 0; k < 70; k++) { const a = r() * 6.283, d = Math.abs(r.gauss()) * 22; D(0, 'body', Math.cos(a) * d, Math.sin(a) * d, r.range(8, 22)); }
+  for (let k = 0; k < 26; k++) { const a = r() * 6.283, d = r.range(40, 100); D(0, 'detail', Math.cos(a) * d, Math.sin(a) * d, r.range(1.5, 5)); }
+  for (let k = 0; k < 12; k++) { const a = r() * 6.283; L(0, Math.cos(a) * 26, Math.sin(a) * 26, a, r.range(24, 62), r.range(2, 5)); }
+  for (let k = 0; k < 40; k++) D(1, 'body', r.gauss() * 10 - 50, r.gauss() * 10, r.range(7, 16));
+  for (let k = 0; k < 60; k++) {
+    const x = r.range(-40, 105), y = r.gauss() * (6 + (x + 40) * 0.18);
+    D(1, 'detail', x, y, r.range(1.2, 5.5) * (1 - (x + 40) / 190));
+  }
+  for (let k = 0; k < 14; k++) L(1, -30, r.gauss() * 12, r.gauss() * 0.15, r.range(50, 110), r.range(1.5, 3.5));
+  for (let k = 0; k < 110; k++) { const a = r() * 6.283, d = Math.abs(r.gauss()) * 34; D(2, 'body', Math.cos(a) * d * 1.15, Math.sin(a) * d, r.range(14, 34)); }
+  for (let k = 0; k < 10; k++) { const a = r() * 6.283, d = r.range(78, 104); D(2, 'detail', Math.cos(a) * d, Math.sin(a) * d * 0.85, r.range(2, 5)); }
+  for (let k = 0; k < 16; k++) { const a = r() * 6.283, d = Math.abs(r.gauss()) * 44; D(3, 'body', Math.cos(a) * d, Math.sin(a) * d, r.range(5, 10)); }
+  for (let k = 0; k < 30; k++) { const a = r() * 6.283, d = Math.abs(r.gauss()) * 60; D(3, 'detail', Math.cos(a) * d, Math.sin(a) * d, r.range(1.2, 3.5)); }
+
+  const drawPass = (pass) => {
+    ctx.clearRect(0, 0, N, N);
+    ctx.fillStyle = '#fff';
+    ctx.globalAlpha = pass === 'body' ? 0.55 : 0.85;
+    for (let t = 0; t < 4; t++) {
+      const ox = (t % 2) * T, oy = Math.floor(t / 2) * T;
+      ctx.save();
+      ctx.beginPath(); ctx.rect(ox + 6, oy + 6, T - 12, T - 12); ctx.clip();
+      ctx.translate(ox + T / 2, oy + T / 2);
+      for (const s of S[t]) {
+        if (s.pass !== pass) continue;
+        ctx.beginPath();
+        if (s.k === 0) ctx.arc(s.a[0], s.a[1], s.a[2], 0, Math.PI * 2);
+        else {
+          const [x, y, ang, len, w] = s.a;
+          ctx.ellipse(x + Math.cos(ang) * len * 0.5, y + Math.sin(ang) * len * 0.5, len * 0.5, w, ang, 0, Math.PI * 2);
+        }
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+    const d = ctx.getImageData(0, 0, N, N).data, c = new Float32Array(N * N);
+    for (let k = 0; k < N * N; k++) c[k] = d[k * 4 + 3] / 255;
+    return c;
+  };
+  const body = drawPass('body'), detail = drawPass('detail');
+
+  /* separable running-sum box blur, run twice: close to a gaussian, and O(n) */
+  const tmp = new Float32Array(N * N);
+  const boxBlur = (a, R) => {
+    const w = 2 * R + 1, cl = (v) => (v < 0 ? 0 : v > N - 1 ? N - 1 : v);
+    for (let y = 0; y < N; y++) {
+      let acc = 0;
+      for (let x = -R; x <= R; x++) acc += a[y * N + cl(x)];
+      for (let x = 0; x < N; x++) { tmp[y * N + x] = acc / w; acc += a[y * N + cl(x + R + 1)] - a[y * N + cl(x - R)]; }
+    }
+    for (let x = 0; x < N; x++) {
+      let acc = 0;
+      for (let y = -R; y <= R; y++) acc += tmp[cl(y) * N + x];
+      for (let y = 0; y < N; y++) { a[y * N + x] = acc / w; acc += tmp[cl(y + R + 1) * N + x] - tmp[cl(y - R) * N + x]; }
+    }
+  };
+  boxBlur(body, 4); boxBlur(body, 3);
+
+  const sm = (e0, e1, v) => { const t = Math.min(1, Math.max(0, (v - e0) / (e1 - e0))); return t * t * (3 - 2 * t); };
+  const img = ctx.createImageData(N, N), px = img.data;
+  const noise = makeNoise(0xB10);
+  for (let k = 0; k < N * N; k++) {
+    const b = sm(0.14, 0.40, body[k]);
+    const dd = Math.min(1, detail[k] * 1.25);
+    const a = Math.max(b, dd);
+    if (a <= 0.004) continue;
+    const depth = Math.max(sm(0.30, 1.0, body[k]), dd * 0.35);
+    const m = 0.82 + fbm(noise, (k % N) / 26, ((k / N) | 0) / 26, 3) * 0.36;
+    px[k * 4]     = (150 + (46 - 150) * depth) * m;
+    px[k * 4 + 1] = (16 + (2 - 16) * depth) * m;
+    px[k * 4 + 2] = (16 + (5 - 16) * depth) * m;
+    px[k * 4 + 3] = 255 * a;
+  }
+  ctx.putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  return t;
+}

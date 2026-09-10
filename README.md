@@ -57,6 +57,17 @@ the corroded patches stop answering light like metal. Drums are the same panel
 turned a quarter turn so the ribs hoop the barrel. Sandbags are woven hessian
 over lumpy, overfilled bags. Nothing in the map is flat untinted colour.
 
+**Melee lands like a swing, not a laser.** V (or F) swings the rifle butt. The
+hit is tested against a 28-degree arc and 2.3 m of reach, resolves at the point
+in the animation where the weapon arrives, never goes through a wall, and aborts
+a reload without costing a round. Your third-person body swings too, so it shows
+in the killcam.
+
+**Blood is optional.** A BLOOD toggle in settings, on by default. With it on,
+hits spray, splatter the surface behind the target, drip onto the ground, and
+bodies pool once they settle - lit and wet, dark where it is deep. Every mark is
+gone five seconds after it lands. With it off, a hit shows a grey fabric puff.
+
 **Everything you hear is synthesised at boot.** A gunshot is four layers: the
 transient crack, a pitch-swept low-end body, mechanical action a few tens of
 milliseconds behind, and an outdoor tail with discrete early reflections whose

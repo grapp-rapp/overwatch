@@ -12,7 +12,7 @@
 import * as THREE from 'three';
 import { cloneWeapon, buildLethal } from './models.js';
 import { FIRE } from './defs.js';
-import { clamp, lerp, damp, makeRng } from '../core/util.js';
+import { meleeCurve, clamp, lerp, damp, makeRng } from '../core/util.js';
 import { makeFlashTexture } from '../world/textures.js';
 
 const rng = makeRng(0x71DE0);
@@ -184,6 +184,13 @@ export class ViewModel {
     // equip: swing up from below
     p.y -= equipK * 0.34;
     p.z += equipK * 0.12;
+    /* melee: wind the weapon back and to the right, then drive it forward and
+       across the body. The curve is shared with the third-person body. */
+    const mc = meleeCurve(s.melee || 0, this._mc || (this._mc = {}));
+    const mAds = 1 - smooth(this.adsW) * 0.6;
+    p.x += (mc.wind * 0.050 - mc.strike * 0.105) * mAds;
+    p.y += (mc.strike * 0.040 - mc.wind * 0.030) * mAds;
+    p.z += (mc.wind * 0.085 - mc.strike * 0.230) * mAds;
 
     /* ---- compose rotation ---- */
     const e = this._e;
@@ -195,6 +202,9 @@ export class ViewModel {
     e.x += this.sprint * 0.26;
     e.x -= equipK * 0.75;
     e.y += equipK * 0.35;
+    e.x += (mc.strike * 0.22 - mc.wind * 0.10) * mAds;
+    e.y += (mc.strike * 0.62 - mc.wind * 0.30) * mAds;
+    e.z += (mc.strike * 0.50 - mc.wind * 0.28) * mAds;
 
     this.rig.position.copy(p);
     this.rig.rotation.copy(e);

@@ -30,7 +30,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { clone as skeletonClone } from 'three/addons/utils/SkeletonUtils.js';
-import { clamp, lerp, damp, dampAngle, wrapPi, makeRng } from '../core/util.js';
+import { meleeCurve, clamp, lerp, damp, dampAngle, wrapPi, makeRng } from '../core/util.js';
 import { cloneWeapon, normalizeGeo } from '../weapons/models.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { makeBlobTexture } from '../world/textures.js';
@@ -556,7 +556,7 @@ export class Character {
     this.reloadT = 0;      // 0..1 progress through a reload
     this.reloading = false;
     this.sprint = 0;
-    this.recoilKick = 0;
+    this.recoilKick = 0; this.meleeK = 0; this._mc = {};
     this.hitFlash = 0;
     this.lodFar = false;
 
@@ -661,7 +661,7 @@ export class Character {
       this.actions[k].reset(); this.actions[k].play();
       this.actions[k].setEffectiveWeight(k === 'idle' ? 1 : 0);
     }
-    this.crouch = 0; this.aimW = 0; this.reloading = false; this.reloadT = 0;
+    this.crouch = 0; this.aimW = 0; this.reloading = false; this.reloadT = 0; this.meleeK = 0;
     if (this.weaponModel) this.weaponModel.visible = true;
   }
 
@@ -833,6 +833,14 @@ export class Character {
     if (this.reloading) {
       const r = Math.sin(clamp(this.reloadT, 0, 1) * Math.PI);
       gripW.addScaledVector(up, -0.16 * r).addScaledVector(fwd, -0.09 * r).addScaledVector(side, -0.05 * r);
+    }
+    /* melee: the same wind-up and drive as the viewmodel, so the swing reads in
+       third person too — in the killcam, and to anyone watching. */
+    if (this.meleeK > 0) {
+      const mc = meleeCurve(this.meleeK, this._mc);
+      gripW.addScaledVector(fwd, 0.24 * mc.strike - 0.10 * mc.wind)
+           .addScaledVector(side, 0.06 * mc.wind - 0.12 * mc.strike)
+           .addScaledVector(up, 0.07 * mc.strike - 0.03 * mc.wind);
     }
 
     /* ---- 2. hand orientation follows from the weapon orientation ---- */

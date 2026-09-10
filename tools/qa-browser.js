@@ -20,6 +20,29 @@ function pct(a, b) { return b ? (a / b * 100).toFixed(1) + '%' : '—'; }
 /* ---------------------------------------------------------------- helpers */
 
 /**
+ * Bring the match back to a clean, live state with the player alive.
+ *
+ * Tests run back to back in one match and some left the bots active between
+ * them, so the player could be shot in the gap - and the next test then
+ * started while the killcam was playing. The team airstrike test failed that
+ * way: its strike was (correctly) refused, because you cannot call one while
+ * watching your own death. This ends any killcam through the game's own path,
+ * respawns the player the way the game does, starts a fresh match if the last
+ * one ended, and yields once so the pointer-lock refusal that enables
+ * keyboard play has landed.
+ */
+async function ensureLive() {
+  const g = G();
+  if (g.state === 'MENU' || g.state === 'RESULT' || g.matchOver) g.deploy();
+  await new Promise(r => setTimeout(r, 80));
+  if (g.state === 'KILLCAM') g.endKillcam();
+  if (!g.me.alive && g.state === 'LIVE') g.spawn(g.me);
+  if (g.strikeMode) g.closeStrikeSelect();
+  window.__stepN(2, 1 / 60);
+  return g.state === 'LIVE' && g.me.alive;
+}
+
+/**
  * Point the player at the nearest visible enemy; returns it (or null).
  *
  * `err` adds a gaussian aim error in radians. The match test uses it so the
@@ -449,6 +472,17 @@ export function testMapWalk() {
 /** Frame time with every bot alive and firing. */
 export function testPerformance(frames = 320) {
   const g = G();
+  /* Measure what the brief asks for: 1920x1080, actually drawn. The suite runs
+     with rendering off for speed, and the screenshot tool can leave the
+     renderer at any size; both used to leak into this number, and inside
+     runAll it was timing the simulation alone and calling that a pass. */
+  const R = window.__renderer;
+  const prevNoRender = window.__noRender;
+  const prevW = R.domElement.width, prevH = R.domElement.height;
+  window.__noRender = false;
+  R.setSize(1920, 1080, false);
+  g.camera.aspect = 1920 / 1080; g.camera.updateProjectionMatrix();
+  if (window.__effects) window.__effects.setPixelScale(1080);
   // quiesce the vsync loop so it is not contending with our own stepping
   window.__benchmark = true;
   // force maximum load: everyone alive, everyone shooting
@@ -494,7 +528,12 @@ export function testPerformance(frames = 320) {
   const p95 = samples[Math.floor(samples.length * 0.95)];
   const p99 = samples[Math.floor(samples.length * 0.99)];
   const info = window.__renderer.info;
+  const drawCalls = info.render.calls, triangles = info.render.triangles;
   window.__benchmark = false;
+  window.__noRender = prevNoRender;
+  R.setSize(prevW, prevH, false);
+  g.camera.aspect = prevW / prevH; g.camera.updateProjectionMatrix();
+  if (window.__effects) window.__effects.setPixelScale(prevH);
   return {
     name: 'frame time, all opponents active and firing',
     frames, actors: g.actors.length, warmupFrames: 90,
@@ -502,9 +541,9 @@ export function testPerformance(frames = 320) {
     p95Ms: +p95.toFixed(2), p99Ms: +p99.toFixed(2), maxMs: +samples[samples.length - 1].toFixed(2),
     impliedFps: +(1000 / mean).toFixed(1),
     wallMs: +wall.toFixed(0),
-    drawCalls: info.render.calls, triangles: info.render.triangles,
-    pass: mean < 16.67,
-    note: `budget for 60 fps is 16.67 ms/frame`,
+    resolution: '1920x1080', drawCalls, triangles,
+    pass: drawCalls > 0 && mean < 16.67,
+    note: drawCalls > 0 ? 'budget for 60 fps is 16.67 ms/frame' : 'nothing was drawn: this timed the simulation only',
   };
 }
 
@@ -816,13 +855,13 @@ export function testAI() {
  */
 export async function testControls() {
   const g = G();
-  if (g.state === 'MENU') g.deploy();
-  /* deploy() requests pointer lock; the rejection that sets lockUnavailable
-     arrives as a task, so yield before driving keys or the input layer will
-     still be gated and nothing moves. */
-  await new Promise(r => setTimeout(r, 80));
+  await ensureLive();
   window.__stepN(30, 1 / 60);
   const I = g.input, me = g.me;
+  /* nobody shoots the player mid-probe: a death here stopped movement and,
+     worse, left the next test starting inside a killcam */
+  const savedBots = g.actors.map(a => a.bot);
+  for (const a of g.actors) a.bot = null;
 
   const basis = () => {
     g.camera.updateMatrixWorld(true);
@@ -854,6 +893,7 @@ export async function testControls() {
 
   const D = probe('KeyD'), A = probe('KeyA'), W = probe('KeyW'), S = probe('KeyS');
   I.keys.clear();
+  for (let i = 0; i < g.actors.length; i++) g.actors[i].bot = savedBots[i];
 
   /* Collision can shorten a leg or slide it, so require a clear majority of the
      travel on the expected axis rather than an exact vector. */
@@ -886,9 +926,9 @@ export async function testControls() {
  * that would break quietly — a friendly-fire regression looks like ordinary
  * blast damage in a log — so all three are asserted directly.
  */
-export function testTeamAirstrike() {
+export async function testTeamAirstrike() {
   const g = G(), V = T().Vector3;
-  if (g.state === 'MENU') g.deploy();
+  await ensureLive();
   window.__stepN(60, 1 / 60);
   const me = g.me;
   const enemies = g.actors.filter(a => a.team !== me.team);
@@ -927,6 +967,8 @@ export function testTeamAirstrike() {
   for (const [a] of spots) { a.alive = true; a.health = 100; if (a.char) a.char.revive(); }
   pin();
 
+  await ensureLive();       // the strike is refused outside a live match
+  pin();
   const firstCall = g.callTeamStrike(me, new V(pair.open[0], 0, pair.open[1]), Math.PI / 2);
   const secondCall = g.callTeamStrike(me, new V(0, 0, 0), 0);
   /* Health has to be sampled while the strike runs: a body that dies to it
@@ -965,6 +1007,242 @@ export function testTeamAirstrike() {
   };
 }
 
+/* ================================================================ TEST 15 */
+/**
+ * Melee lands where a swing would, and only there.
+ *
+ * The original hit test was one thin ray down the crosshair: a target 12
+ * degrees off centre at arm's length was a miss, so melee only worked with
+ * pixel-perfect aim and felt broken. This presses V through the real input
+ * layer at a spread of positions and asserts both directions: inside the arc
+ * and within reach it must connect; out of reach, far to the side, at the sky
+ * or through a wall it must not. It also checks a swing interrupts a reload
+ * without eating ammo.
+ */
+export async function testMelee() {
+  const g = G(), I = g.input, M = g.map;
+  /* ensureLive() yields for the pointer-lock refusal: a V pressed before it
+     does nothing at all (the first standalone run of this test: 0/9). */
+  await ensureLive();
+  window.__stepN(30, 1 / 60);
+  const me = g.me;
+  const foe = g.actors.find(a => a.team !== me.team);
+  const saved = g.actors.map(a => a.bot);
+  for (const a of g.actors) a.bot = null;
+  await ensureLive();
+
+  const solidAt = (x, z, y) => {
+    M.beginQuery();
+    for (const b of M.query(x - 0.42, z - 0.42, x + 0.42, z + 0.42, [])) {
+      if (!b.solid) continue;
+      if (x + 0.42 <= b.x0 || x - 0.42 >= b.x1 || z + 0.42 <= b.z0 || z - 0.42 >= b.z1) continue;
+      if (y + 1.8 <= b.y0 || y >= b.y1) continue;
+      return true;
+    }
+    return false;
+  };
+
+  let X = 0, Z = 0, yaw = 0, pitch = 0;
+  const stage = (ax, az, ay, fx, fz, fy, crouch, p) => {
+    X = ax; Z = az; pitch = p;
+    yaw = Math.atan2(fx - ax, fz - az);
+    me.alive = true; me.health = 100; me.meleeT = 0;
+    me.pos.set(ax, ay, az); me.vel.set(0, 0, 0); me.yaw = yaw; me.pitch = pitch;
+    foe.alive = true; foe.health = 100; foe.crouch = crouch; if (foe.char) foe.char.revive();
+    foe.pos.set(fx, fy, fz); foe.vel.set(0, 0, 0);
+  };
+  const swing = (fx, fz, crouch) => {
+    const h0 = foe.health;
+    I.keys.add('KeyV'); I.pressed.add('KeyV');
+    let hitF = -1, charK = 0, fired = false;
+    for (let f = 0; f < 20; f++) {
+      window.__step(1 / 60);
+      if (f === 0) { I.keys.delete('KeyV'); fired = me.meleeT > 0; }
+      me.pos.x = X; me.pos.z = Z; me.yaw = yaw; me.pitch = pitch;
+      if (foe.alive) { foe.pos.x = fx; foe.pos.z = fz; foe.crouch = crouch; }
+      if (f === 8 && me.char) charK = me.char.meleeK;
+      if (hitF < 0 && (foe.health < h0 || !foe.alive)) hitF = f;
+    }
+    return { hit: hitF >= 0, ms: hitF >= 0 ? Math.round((hitF + 1) * 1000 / 60) : null, charK, fired };
+  };
+
+  /* open ground: the same spot the airstrike test uses; face +Z, offset sideways */
+  const OX = -30, OZ = -5, OY = g.groundHeight(OX, OZ, 0.5, 0.4);
+  const open = (dist, lateral, p, crouch = 0) => {
+    stage(OX, OZ, OY, OX + lateral, OZ + dist, OY, crouch, p);
+    yaw = 0; me.yaw = 0;
+    return { dist, lateral, pitch: p, crouch, ...swing(OX + lateral, OZ + dist, crouch) };
+  };
+  const hit = [
+    open(1.2, 0, -0.15), open(1.2, 0.25, -0.15), open(1.2, -0.25, -0.15), open(1.2, 0.45, -0.15),
+    open(1.6, 0, -0.15), open(2.2, 0, -0.10), open(0.8, 0, -0.30), open(1.2, 0, 0.35),
+    open(1.3, 0, -0.35, 1),
+  ];
+  const miss = [open(2.9, 0, -0.10), open(1.2, 1.0, -0.15), open(1.2, 0, 0.9)];
+
+  /* through a wall: two open spots 1.4 m apart with the chest line blocked */
+  let wall = null;
+  for (let x = -28; x <= 28 && !wall; x += 0.5) {
+    for (let z = -20; z <= 20 && !wall; z += 0.5) {
+      const y0 = g.groundHeight(x, z, 0.5, 0.4);
+      if (y0 > 0.3 || solidAt(x, z, y0)) continue;
+      for (const [dx, dz] of [[1.4, 0], [-1.4, 0], [0, 1.4], [0, -1.4]]) {
+        const x1 = x + dx, z1 = z + dz, y1 = g.groundHeight(x1, z1, 0.5, 0.4);
+        if (y1 > 0.3 || solidAt(x1, z1, y1)) continue;
+        if (M.lineOfSight(x, y0 + 1.3, z, x1, y1 + 1.3, z1)) continue;
+        wall = { a: [x, z, y0], b: [x1, z1, y1] };
+        break;
+      }
+    }
+  }
+  let throughWall = null;
+  if (wall) {
+    stage(wall.a[0], wall.a[1], wall.a[2], wall.b[0], wall.b[1], wall.b[2], 0, -0.1);
+    throughWall = swing(wall.b[0], wall.b[1], 0);
+  }
+
+  /* a swing aborts a reload, and costs no rounds */
+  stage(OX, OZ, OY, OX, OZ + 3.5, OY, 0, -0.1);
+  const W = me.weapon;
+  W.mag = Math.max(1, W.def.mag - 8);
+  W.startReload(g.audio, me.pos, true);
+  window.__stepN(10, 1 / 60);
+  const before = { mag: W.mag, reserve: W.reserve, reloading: W.reloading };
+  I.keys.add('KeyV'); I.pressed.add('KeyV'); window.__step(1 / 60); I.keys.delete('KeyV');
+  const after = { mag: W.mag, reserve: W.reserve, reloading: W.reloading };
+  window.__stepN(40, 1 / 60);
+
+  /* put the match back */
+  for (let i = 0; i < g.actors.length; i++) g.actors[i].bot = saved[i];
+  W.mag = W.def.mag;
+  me.meleeT = 0; me.health = 100;
+  g.spawn(foe, false);
+
+  const checks = {
+    connectsInsideTheArc: hit.every(r => r.hit),
+    everySwingFired: hit.concat(miss).every(r => r.fired) && !!throughWall && throughWall.fired,
+    missesOutsideIt: miss.every(r => r.fired && !r.hit),
+    wallBlocksTheSwing: !!throughWall && throughWall.fired && !throughWall.hit,
+    landsAtContact: hit.every(r => r.ms !== null && r.ms <= 250),
+    bodySwingsInThirdPerson: hit.some(r => r.charK > 0.05),
+    reloadInterrupted: before.reloading && !after.reloading,
+    noRoundsLost: before.mag === after.mag && before.reserve === after.reserve,
+  };
+  const failed = Object.keys(checks).filter(k => !checks[k]);
+  return {
+    name: 'melee', checks, failed,
+    connected: hit.filter(r => r.hit).length + '/' + hit.length,
+    refused: miss.filter(r => !r.hit).length + '/' + miss.length,
+    wall: wall ? { at: wall, hit: throughWall.hit } : 'no wall pair found',
+    reload: { before, after },
+    pass: failed.length === 0,
+  };
+}
+
+/* ================================================================ TEST 16 */
+/**
+ * Blood appears where it should, is gone in five seconds, and the toggle means it.
+ *
+ * With blood on, a body hit in front of a wall must leave a splatter on the
+ * wall and drips on the ground; a kill must pool blood under the body once it
+ * has settled; a mark must hold, then fade, then be gone by five seconds. With
+ * the toggle off a hit must leave nothing, and switching off must wipe what is
+ * already there. The toggle is driven through the real checkbox.
+ */
+export async function testBlood() {
+  const g = G(), E = g.effects, M = g.map, V = T().Vector3;
+  await ensureLive();
+  window.__stepN(30, 1 / 60);
+  const saved = g.actors.map(a => a.bot);
+  for (const a of g.actors) a.bot = null;
+  const restore = () => { for (let i = 0; i < g.actors.length; i++) g.actors[i].bot = saved[i]; };
+  const box = document.getElementById('tgBlood');
+  const setToggle = (on) => { box.checked = on; box.dispatchEvent(new Event('change')); };
+  setToggle(true);
+  E.clearBlood();
+  const live = () => E.bSlots.filter(b => b.live);
+  const normalOf = (b) => new V(0, 0, 1).applyQuaternion(b.q);
+
+  /* a point 1.2 to 1.6 m in front of a wall, facing it */
+  let spot = null;
+  for (let x = -28; x <= 28 && !spot; x += 0.5) {
+    for (let z = -20; z <= 20 && !spot; z += 0.5) {
+      if (g.groundHeight(x, z, 0.5, 0.4) > 0.3) continue;
+      for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const h = M.raycast(x, 1.3, z, dx, 0, dz, 3, {});
+        if (h && h.t > 1.2 && h.t < 1.6 && Math.abs(h.ny) < 0.2 && h.surface !== 'glass') { spot = { x, z, dx, dz }; break; }
+      }
+    }
+  }
+  if (!spot) { restore(); return { name: 'blood', pass: false, note: 'no wall spot found' }; }
+
+  const P = new V(spot.x, 1.3, spot.z), D = new V(spot.dx, 0, spot.dz);
+  for (let k = 0; k < 3; k++) E.bloodHit(P, D, false);
+  window.__step(1 / 60);
+  const marks = live();
+  const onWall = marks.filter(b => Math.abs(normalOf(b).y) < 0.5);
+  const onGround = marks.filter(b => normalOf(b).y > 0.8);
+
+  /* one wall mark's life: full at 3 s, fading by 4.5 s, gone by 5 s */
+  const tracked = onWall[0] || marks[0];
+  const fadeAt = (t) => {
+    while (tracked && tracked.live && tracked.t < t) window.__step(1 / 60);
+    return tracked && tracked.live ? E.bFade.array[tracked.i] : 0;
+  };
+  const f30 = fadeAt(3.0), f45 = fadeAt(4.5), f505 = fadeAt(5.05);
+  const goneAtFive = !!tracked && !tracked.live;
+
+  /* a kill pools blood under the body once it has come to rest */
+  E.clearBlood();
+  const foe = g.actors.find(a => a.team !== g.me.team);
+  foe.alive = true; foe.health = 100; if (foe.char) foe.char.revive();
+  const fy = g.groundHeight(-30, -5, 0.5, 0.4);
+  foe.pos.set(-30, fy, -5); foe.vel.set(0, 0, 0);
+  window.__stepN(3, 1 / 60);
+  g.applyDamage(foe, 500, g.me, 'TEST', false, new V(0, 0, 1), 'chest');
+  window.__stepN(Math.round(1.4 * 60), 1 / 60);
+  const pools = live().filter(b => b.grow > 0);
+  const poolUnderBody = pools.some(b => Math.hypot(b.p.x + 30, b.p.z + 5) < 1.8 && normalOf(b).y > 0.8);
+  window.__stepN(Math.round(5.0 * 60), 1 / 60);
+  const poolGone = live().filter(b => b.grow > 0).length === 0;
+
+  /* toggle off: wipes what is there, and a hit leaves nothing */
+  E.bloodHit(P, D, false);
+  window.__step(1 / 60);
+  const beforeOff = live().length;
+  setToggle(false);
+  const afterOff = live().length;
+  const effectsFollowsBox = E.blood === false;
+  E.bloodHit(P, D, false);
+  window.__step(1 / 60);
+  const hitWhileOff = live().length;
+  setToggle(true);
+
+  restore();
+  g.spawn(foe, false);
+  E.clearBlood();
+
+  const checks = {
+    splatterOnWall: onWall.length > 0,
+    dripsOnGround: onGround.length > 0,
+    fullAtThreeSeconds: f30 > 0.8,
+    fadingByFourAndAHalf: f45 > 0 && f45 < 0.5,
+    goneByFive: goneAtFive && f505 === 0,
+    poolUnderBody,
+    poolGoneAfterFive: poolGone,
+    toggleReachesEffects: effectsFollowsBox,
+    toggleOffWipes: beforeOff > 0 && afterOff === 0,
+    noBloodWhileOff: hitWhileOff === 0,
+  };
+  const failed = Object.keys(checks).filter(k => !checks[k]);
+  return {
+    name: 'blood', checks, failed,
+    marks: { total: marks.length, wall: onWall.length, ground: onGround.length, pools: pools.length },
+    fade: { at3s: +f30.toFixed(2), at4_5s: +f45.toFixed(2), at5_05s: f505 },
+    pass: failed.length === 0,
+  };
+}
+
 export async function runAll(opts = {}) {
   const out = [];
   const push = (r) => { out.push(r); console.log(`[qa] ${r.pass ? 'PASS' : 'FAIL'}  ${r.name}`); return r; };
@@ -981,7 +1259,10 @@ export async function runAll(opts = {}) {
   push(testMapWalk());
   push(testKillcam());
   push(await testControls());
-  push(testTeamAirstrike());
+  push(await testTeamAirstrike());
+  push(await testMelee());
+  push(await testBlood());
+  await ensureLive();
   push(testPerformance(opts.perfFrames ?? 320));
   window.__qaResults = out;
   return { pass: out.every(r => r.pass), failed: out.filter(r => !r.pass).map(r => r.name), results: out };
