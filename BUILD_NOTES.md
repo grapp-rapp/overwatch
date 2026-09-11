@@ -321,14 +321,18 @@ a 3D-only render.
 
 | File | What it shows |
 |---|---|
-| `01-loadout.png` | Custom loadout: primary/secondary/lethal with 3D renders, pickers, aggregate stat bars, loadout summary |
-| `01b-armoury.png` | Weapon grid with per-gun renders and stats; detail panel with STK/TTK table |
-| `01c-briefing.png` | Tactical map drawn from the real collision data, spawn markers, operation parameters, difficulty, killstreak list |
-| `02-spawn-view.png` | In-match first person: viewmodel, minimap with facing cone, compass, ammo, health, killstreak rail, and a hard cast shadow across the road |
-| `03-enemy-midstride.png` | Hostile at 3.3 m at full run — rear leg extended with the foot lifted, front leg driving, camo body, helmet with faction band, plate carrier, holster, weapon in both hands, torso twisted independently of the legs, contact shadow under the planted foot |
-| `04-sniper-scope.png` | LONGBOW .408 through the 8× optic (camera FOV 8° vs 85°): lens vignette, mil-dot ladder, a hostile at 46 m, bullet-hole decals on a container |
-| `05-hitmarker.png` | Hitmarker on a hostile at 10 m, muzzle flash on the barrel, ammo counter stepped down |
-| `06-killcam.png` | First-person killcam from ECHO-11's eyes, letterboxed, with the killer's name, weapon and respawn countdown |
+| `01-loadout.jpg` | Custom loadout: primary/secondary/lethal with 3D renders, pickers, aggregate stat bars, loadout summary |
+| `01b-armoury.jpg` | Weapon grid with per-gun renders and stats; detail panel with STK/TTK table |
+| `01c-briefing.jpg` | Tactical map drawn from the real collision data, spawn markers, operation parameters, difficulty, killstreak list |
+| `02-spawn-view.jpg` | In-match first person: viewmodel, minimap with facing cone, compass, ammo, health, killstreak rail, and a hard cast shadow across the road |
+| `03-enemy-midstride.jpg` | Hostile at 3.3 m at full run — rear leg extended with the foot lifted, front leg driving, camo body, helmet with faction band, plate carrier, holster, weapon in both hands, torso twisted independently of the legs, contact shadow under the planted foot |
+| `04-sniper-scope.jpg` | LONGBOW .408 through the 8× optic (camera FOV 8° vs 85°): lens vignette, mil-dot ladder, a hostile at 46 m, bullet-hole decals on a container |
+| `05-hitmarker.jpg` | Hitmarker on a hostile at 10 m, muzzle flash on the barrel, ammo counter stepped down |
+| `06-killcam.jpg` | First-person killcam from ECHO-11's eyes, letterboxed, with the killer's name, weapon and respawn countdown |
+| `10-punch-guard.jpg`, `10-punch.jpg` | The punch: your bare fist raised in the guard at the lower left, then landing under the crosshair with the gun dropped out of view; rolled WOODLAND sleeve |
+| `11-legs.jpg`, `11-legs-walk.jpg` | Looking down: your own legs and boots (the legs-only cut of your body), standing and mid-stride, in WOODLAND |
+| `12-skins.jpg` | The SKINS tab: fifteen patterns, the headshot bank, prices, and TIGER STRIPE previewed on your primary |
+| `13-death-0.3s.jpg` to `13-death-30s.jpg` | A headshot kill, frame by frame: the drop, blood starting at the head (1.5 s), the body fading (2.7 s) and gone (3.6 s) while the pool keeps spreading (8 s), then dried and fading (30 s) |
 
 I looked at every one. The characters read as rigged, textured humans with gear
 and real stride, not as primitives, and nothing slides without moving its legs.
@@ -701,3 +705,283 @@ The one failure is frame time, now a real rendered 1920x1080 measurement:
 A typical frame fits the 16.7 ms budget; the mean does not, because of a heavy
 tail of 30-38 ms frames. Against "a locked 60 fps at 1080p" that is a fail, and
 it is recorded as one. It is tracked as separate follow-up work.
+
+---
+
+## Three new maps: TIMBERLINE, WHITEOUT, FOUNDRY
+
+Requested: a forest map and two more.
+
+### How maps work now
+
+Dustline was hard-wired. Its size was a set of global constants read by the
+minimap, the tactical map and the airstrike selector; `main.js` built exactly
+one map and gave it Dustline's sky; the AI's hotspots and the tactical map's
+zone labels were Dustline coordinates typed into `game.js` and `menu.js`.
+
+A map is now a definition in `src/world/maps/`: size, layout, an optional
+decorative pass, sky and light, extra surfaces, zone names, AI hotspots, and
+the high ground the map walk must prove reachable. `GameMap` builds from one;
+`main.js` caches built maps and swaps sky, fog, sun and exposure on a switch;
+the briefing draws a cheap layout-only preview of maps not yet built. The new
+surfaces (`biomes.js`) and props (`props.js`) are generated only when a map
+that needs them loads, so boot did not move (1.2-1.8 s).
+
+Trees, rocks, tanks and domes cannot be boxes, and everything that has to
+agree - collision, bullets, sight, the navmesh - only understands boxes. So a
+prop is a box for all of those, usually invisible, plus an instanced shape for
+the eye, authored at unit size so a rock is scaled to exactly the box that
+stops you. Round things get three boxes whose corners sit on the circle, so
+nobody stops against air at the corner of a tank.
+
+### Bugs the new maps exposed
+
+- **A bot spawned in the other team's base** (Timberline: 400 of 800 spawn
+  picks visible to an enemy). New actors start "alive" at the map origin and
+  are placed one at a time, so the first were scored against enemies still
+  standing at the centre. Timberline's road runs straight to it, every team-A
+  spawn read as "enemy in view", and a bot fled to team B's side. Actors now
+  count only once placed. Latent on Dustline, whose centre is walled off.
+- **The navigation grid was not symmetric.** It started at the west edge in
+  0.7 m cells, and 62 m is not a multiple of 0.7, so mirrored geometry fell
+  differently on each half: a 1.3 m door on Foundry had walkable cells on the
+  west office and none on its mirror, so no bot could enter the east office
+  or reach the south catwalk. The grid is now symmetric about the origin, and
+  every new doorway and stair gap is at least 1.6 m - with 0.7 m cells and a
+  0.4 m-radius body, 1.5 m stays passable at any alignment. Dustline's grid
+  moved half a metre; its map walk, AI and spawn tests still pass.
+- **Spawn-to-spawn sightlines.** Timberline's logging road and Whiteout's
+  cleared track were each one straight lane from spawn to spawn. A head-high
+  saw house and log stacks, and track-end containers, now put something in
+  every straight line down them.
+- **Pine branches at head height.** The first pines started their skirts at
+  1.9 m, and every view in the woods had a dark cone pressed into the top of
+  it. They now start above 3 m.
+- **The blood test picked a post.** On Whiteout the first surface ahead was a
+  0.2 m radar leg, and splatter missed it. The test now requires the same
+  face 0.6 m either side and lower down.
+
+### Verified, per map
+
+`runMaps()` runs the map-shaped tests on every registered map, each on a fresh
+deploy. A map without an authored walking route gets one generated: floor
+points spread over the whole map by farthest-point sampling, then every
+must-reach high point (tower tops, catwalks, lab floors) and back down.
+
+| | Dustline | Timberline | Whiteout | Foundry |
+|---|---|---|---|---|
+| Spawn safety, 800 picks | 0 bad | 0 bad | 0 bad | 0 bad |
+| Sight vs bullet raycast, 3,996 lines | 0 mismatches | 0 | 0 | 0 |
+| Map walk: unreachable / wedge cells | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| AI, controls, airstrike, melee, blood | pass | pass | pass | pass |
+| Frame time at 1080p, mean | 20.8 ms | 24.0 ms | 21.3 ms | 21.1 ms |
+
+Frame time misses the 16.7 ms budget on every map, Dustline included - the
+same open issue as above, tracked separately. Timberline is the heaviest, and
+the cost is foliage: canopies cover much of the screen, several layers deep.
+Props are batched by map quadrant so batches behind the camera are culled,
+trees beyond the edge cast no shadow, and foliage uses a Lambert material with
+its albedo only; that took Timberline from about 40% slower than Dustline to
+about 15%. Turning shadows off there saves only ~3 ms, so the shadow pass is
+not where the time goes.
+
+## First person: a fist for the punch, legs when you look down
+
+**The punch showed the gun.** Melee used to shove the rifle itself forward, so
+what you saw was a gun lunging at the target. Now the gun drops down and right
+out of view (0.24 m, measured by the harness) and a gloved left fist comes up
+from below the screen into a guard at the lower left, jabs out to just under the
+crosshair and falls away. It rides the same `meleeCurve` as the third-person
+swing and the hit test, so the damage still lands as the fist arrives. The fist
+is procedural (`buildFist` in `src/weapons/viewmodel.js`): rounded boxes merged
+into one glove (back of the hand, four knuckles, thumb, wrist, cuff), a hard
+knuckle guard, and a sleeve that wears your skin. The forearm is aimed at a fixed
+shoulder point every frame, so it always reads as an arm, and the fist turns
+from thumb-up in the guard to palm-down on impact.
+
+**Looking down showed only your shadow.** Your operator sat on a layer the
+camera never drew, because the camera is inside its head. Now:
+
+| Layer | What | Your camera in play | Killcam | Shadow pass |
+|---|---|---|---|---|
+| 3 | gear at the waist | drawn | drawn | yes |
+| 4 | your third-person gun | hidden | drawn | yes |
+| 5 | the whole body, visor, gear above the waist | hidden | drawn | yes |
+| 6 | legs-only cut of the body | drawn | hidden | no |
+
+The legs-only cut is built once from the skinned mesh by skin weight: a triangle
+stays if all three of its vertices are dominated by a hip or leg bone. It shares
+every vertex attribute with the body (only the index buffer is new) and is bound
+to the same skeleton, so it animates for free. It is 34% of the body's
+triangles. Looking down also eases the body back by up to 0.24 m, so you see
+legs and boots rather than straight down into the waist.
+
+**Two bugs on the way.**
+
+- *Dressing the wrong operator.* The skin and the first-person setup were applied
+  at deploy, before `startMatch` built a fresh operator for you, so in play the
+  camera sat inside an untouched head and torso (black arcs across the first
+  punch captures). The harness caught it (`clipped: false`). The operator is now
+  dressed after the match builds it, and the draw re-dresses it if it is ever
+  rebuilt.
+- *Clipping cost 2-3 ms.* The first version drew the whole body with a clipping
+  plane at the waist. It looked right and was expensive: head and torso wrap the
+  camera, so all of their triangles were rasterised and then discarded pixel by
+  pixel, and drawing both sides made it worse. A controlled benchmark (same
+  pose, main pass only, 1920x1080, 40-frame samples interleaved off/on, median
+  of 8 each) put a number on it:
+
+| Pose | clipped whole body | legs-only mesh |
+|---|---|---|
+| level | +3.34 ms (14.85 -> 18.19) | +0.23 ms (15.30 -> 15.53) |
+| looking down | +1.83 ms (13.73 -> 15.56) | +0.92 ms (13.87 -> 14.79) |
+
+The +0.9 ms looking down is the legs genuinely covering a slice of the screen.
+Levelled, they cost nothing measurable.
+
+## Skins
+
+Fifteen, on a new SKINS tab: five free (STANDARD ISSUE, WOODLAND, DESERT,
+ARCTIC, URBAN DIGITAL) and ten bought with headshots (TIGER STRIPE 1, NIGHT OPS
+2, CARBON 2, RED DRAGON 3, JUNGLE 3, DEEP OCEAN 4, VOLCANIC 5, NEON SYNTH 6,
+CHROME 8, GOLD 10).
+
+**Currency.** Each headshot kill you make banks one headshot (`awardHeadshot()`
+from `Game.killActor`), kept in localStorage under `obk.profile.v1` with the
+unlocked list and the equipped skin. Unlocking spends; equipping is free. The
+kill banner reads `HEADSHOT · +1 BANKED (n)` and the result screen shows
+`HEADSHOT BANK +k -> n`.
+
+**What a skin dresses.** Guns: the materials a real camo covers (polymer,
+furniture, the blued receiver, the magazine), picked by material rather than by
+name - anything with metalness 0.88 or more, transparent or emissive stays
+factory, so bore, bolt, slide and glass never take paint. That covers the
+viewmodel gun, your third-person gun and the menu previews. The fist: a camo
+sleeve and a glove in the skin's colour. Your operator: camo over the fatigues'
+own cloth texture, gear in the skin's colour. Never a bot.
+
+**How the camo is drawn.** Neither the guns nor the body have UVs laid out for
+a pattern, so the camo is projected: sampled on three planes from each mesh's
+object-space position (the bind pose, on the skinned body, so it moves with the
+cloth) and blended by the normal - `withCamo` in `src/game/camo.js`, an
+`onBeforeCompile` patch on the standard material. The patterns are 256 px
+tileable canvases built from value noise. VOLCANIC and NEON SYNTH add their
+brightest colours as emission; CHROME and GOLD are metalness 1 against a small
+painted studio gradient, because neither the viewmodel nor the menu scene has a
+sky to reflect.
+
+**Cloth came out black.** A pattern multiplied over the Soldier's own dark cloth
+texture is two darks multiplied. Every pattern now records its mean linear
+luminance when it is generated, and cloth lifts it to a mean of 0.3 (gain capped
+at 6): woodland reads as cloth, arctic is left alone, NIGHT OPS stays dark.
+
+**The preview drifted out of frame.** The menu's weapon studio measured the
+model where the previous draw had left it, so offset and rotation fed back into
+the next frame. Drawn once a frame it only wobbled; the skins preview draws the
+same gun a second time at another angle, and the offset random-walked about 8 m
+off screen. It now measures in model space on every draw.
+
+**Verified** (`testSkins`): 5 free and 10 paid; unlocking with an empty bank is
+refused; a body-shot kill through the real kill path banks nothing and a
+headshot kill banks exactly one; a locked skin cannot be equipped; the camo
+lands on poly, darkmetal and magazine and not on steel, slide or lens; the
+sleeve, the suit, the legs cut and your third-person gun wear it and no other
+operator does; every one of the 15 skins is drawn for a frame with zero shader
+errors. `testFirstPerson`: 35 frames of fist per punch, reaching the centre,
+gone afterwards; the gun down 0.24 m whenever the fist is out; layers exactly as
+in the table above; the legs cut 34% of the body and casting no shadow of its
+own; no other operator touched.
+
+## Repository size: the GitHub upload
+
+The browser upload to GitHub failed with "file too large". The project was
+54 MB, 50 MB of it the 20 QA screenshots as 1080p PNGs (2-4 MB each). No single
+file was near GitHub's 25 MB per-file browser limit, but a zip of the folder
+was. The screenshots are now JPEG (49.5 MB of PNG became 5.2 MB), the capture
+tool writes JPEG at quality 0.88, and the dev server saves a JPEG data URL as
+`.jpg`. The whole project is now about 11 MB in 73 files; the largest file is
+`Soldier.glb` at 2.1 MB.
+
+**Limits.** The legs cut ends in an open hem at the waist; look straight down
+and you can see into it. The headshot bank lives in the browser's localStorage,
+so clearing site data or switching browser starts it again, and nothing stops a
+player editing it - it is a single-player unlock, not an economy.
+
+## Full suite after this round
+
+`runAll` on DUSTLINE: 16 of 17 pass - cold boot, ballistics, recoil, line of
+sight, hit zones, every weapon, spawn safety, AI, map walk, killcam, controls,
+team airstrike, melee, blood, first-person, skins. Frame time fails the 16.7 ms
+budget, as it did before this round (this run: 17.45 ms mean, 16.29 ms median,
+30.1 ms p95 at 1920x1080); that work is tracked on its own. `testFirstPerson`
+also passes on TIMBERLINE, where deploying builds you a fresh operator.
+
+## A real hand, no chopper gunner, bodies that go, blood that stays
+
+**The hand.** The punch showed a glove of rounded boxes with a knuckle plate;
+it read as a gauntlet, not a hand. `buildFist` in `src/weapons/viewmodel.js`
+now builds a fist the way a hand is built: the back of the hand and palm as one
+block (narrower at the wrist, domed on top, four tendons raised toward the
+knuckles); four fingers of three capsule phalanges each - down from the
+knuckle, back under the palm, tip tucked in - with their own lengths and a
+slight curl toward the middle; knuckle heads; the thumb's muscle and three
+thumb segments wrapped across the front of the index and middle fingers, with
+a nail; an oval wrist, a bare forearm, and a sleeve rolled to mid-forearm. One
+mesh, one material: each part carries a colour multiplier (knuckles and
+fingertips redder, the nail paler) over the skin tone, with a little sheen.
+Six tones on the SKINS tab under YOUR HAND, saved with the profile. The skins'
+glove colours are gone; a skin now dresses the sleeve.
+
+**The chopper gunner is gone.** The 11-kill streak put you on the helicopter's
+minigun. Removed: the streak, its icon and key, the helicopter's gunner branch,
+`_updateGunner`, `enterGunner` and `exitGunner`, every `inGunner` check
+(damage, melee and bot targeting, the reticle, gunshot audio, the viewmodel and
+the first-person legs), and the thermal overlay's markup, CSS and HUD methods.
+The attack helicopter stays at 7 kills.
+
+**Bodies go after three seconds.** A body used to lie there until its owner
+respawned. It now lies 2.3 s and has faded out by 3.0 s (`CORPSE_HOLD`,
+`CORPSE_FADE` in `src/chars/characters.js`); its blood stays. The fade swaps in
+transparent copies of that operator's own materials, made once and kept, so the
+gear and weapon materials everyone shares never change and nobody alive pays for
+blending; `revive()` puts the solid ones back. The fall changed too: it eased
+to a stop with up to 1.6 rad of spin on a headshot, which read as the body
+rolling over. It now accelerates into the ground (0.72 s) and bounces once, with
+at most 0.6 rad of turn.
+
+**Blood pools spread.** A pool used to be one decal scaled up over 1.6 s and
+gone, like every mark, after 5 s. Now a body bleeds from the hips, and from the
+head as well on a headshot, 0.85 s after it drops. `makePoolTexture` stores,
+for every texel, when the front reaches it (a few angular harmonics for the
+lobes, fbm for the ragged edge, none at the centre so it starts as a round
+well); the pool shader draws whatever the front has passed, with an
+anti-aliased edge that stays sharp as it grows - scaling a decal blurs its edge
+with it. Thin at the front, the blood is red and more see-through; deep behind
+it, near black. Fresh it is glossy; between 8 and 32 s it dries darker, browner
+and duller; it fades out over the last 20 s of 45. Splatters and drips now last
+12 s, fading over the last 5.
+
+A pool only spreads as far as the ground stays level (eight directions at
+growing radii, up to 0.8 m), so it never hangs off a ledge or runs up a wall;
+up against a crate it moves up to 0.28 m to the open side. The first version
+mirrored the sky so strongly that a pool seen from a few metres read as a grey
+patch; the environment reflection is now 0.45 and fresh roughness 0.16, a wet
+sheen that keeps the red.
+
+**Two harness bugs on the way.** `ensureLive` waited a fixed 80 ms for the
+pointer-lock refusal that lets keys through; a fresh browser tab refused more
+slowly, so V was pressed before the game took keys and the fist test saw 0
+frames. It now waits for the verdict. And the capture tool yields while it
+saves a file, during which the game's own frame loop kept running, so a "hit"
+frame was really taken after the punch had ended; this round's captures pause
+that loop (`__benchmark`).
+
+**Verified.** `testBlood`, 15 checks: splatter at 0.92 at 6 s, 0.37 at 10 s,
+gone at 12.05 s; the pool under the body, its front at 0.21 at 1.4 s and 0.91 at
+7.4 s, reach 0.8 m; the body visible at 1.4 s and gone at 3.4 s while the pool
+stays; the pool at full opacity at 20 s and gone by 46 s; the body solid again
+on respawn; the toggle still wipes and blocks everything. `testFirstPerson`:
+35 frames of fist, reaching the crosshair. `runAll` on DUSTLINE: 16 of 17 pass;
+frame time fails the budget as before (21.78 ms mean this run, 17.45 ms last
+round - this number moves by several ms between runs in this browser; the round
+adds one instanced draw call for pools, and blending only while a body fades).

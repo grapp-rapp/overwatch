@@ -13,14 +13,31 @@
    ========================================================================== */
 import * as THREE from 'three';
 import { makeRng, clamp, lerp } from '../core/util.js';
-import { makeBlobTexture, makeFlashTexture, makeImpactTexture, makeBloodAtlas } from '../world/textures.js';
+import { makeBlobTexture, makeFlashTexture, makeImpactTexture, makeBloodAtlas, makePoolTexture } from '../world/textures.js';
 
 const rng = makeRng(0xEFFEC7);
 
-/* Blood: every mark is gone BLOOD_LIFE seconds after it lands, fading over the
-   last BLOOD_FADE. Atlas tile offsets are in UV space (the canvas is flipped). */
-const BLOOD_LIFE = 5.0, BLOOD_FADE = 1.5;
+/* Blood. A splatter or drip is gone BLOOD_LIFE seconds after it lands, fading
+   over the last BLOOD_FADE. A pool under a body spreads for POOL_SPREAD s,
+   dries (darker, duller) between POOL_DRY[0] and POOL_DRY[1] s, and fades out
+   over the last POOL_FADE s of its POOL_LIFE. Atlas tile offsets are in UV
+   space (the canvas is flipped). */
+const BLOOD_LIFE = 12.0, BLOOD_FADE = 5.0;
+const POOL_LIFE = 45, POOL_SPREAD = 7.5, POOL_DRY = [8, 32], POOL_FADE = 20;
 const BLOOD_TILES = [[0, 0.5], [0.5, 0.5], [0, 0], [0.5, 0]];
+
+/* a pool's colour, in place of three's map chunk: inside where the front has
+   passed (sharp, anti-aliased edge), thin and red at the front, deep and near
+   black behind it, browning as it dries */
+const POOL_FRAG = `
+  vec4 pTex = texture2D( map, vMapUv );
+  float pW = max( fwidth( pTex.r ) * 1.5, 0.004 );
+  float pIn = 1.0 - smoothstep( vPool.x - pW, vPool.x + pW * 0.5, pTex.r );
+  float pDepth = clamp( ( vPool.x - pTex.r ) * 5.0, 0.0, 1.0 );
+  vec3 pWet = mix( vec3( 0.32, 0.014, 0.012 ), vec3( 0.060, 0.003, 0.003 ), pDepth );
+  vec3 pCol = mix( pWet, vec3( 0.040, 0.010, 0.007 ), vPool.z ) * ( 0.82 + 0.36 * pTex.g );
+  diffuseColor = vec4( pCol, pIn * mix( 0.58, 0.97, pDepth ) * vPool.y );
+`;
 
 /* ---- particle shader ----------------------------------------------------- */
 const PARTICLE_VS = `
@@ -212,6 +229,45 @@ export class Effects {
         p: new THREE.Vector3(), q: new THREE.Quaternion() });
     }
     this.bIdx = 0; this.bLive = 0;
+
+    /* ---- blood pools ----
+       A body's blood does not appear at full size: it runs out from under the
+       body along a ragged front, and the edge stays sharp as it spreads (a
+       decal scaled up blurs its edge with it). The spread is in the shader:
+       the texture stores when the front reaches each texel, and each pool
+       carries how far its front has got. Fresh blood is glossy - red at the
+       thin edge, near black where it is deep - then dries darker and duller,
+       and fades. */
+    this.PN = 24;
+    const pgeo = new THREE.PlaneGeometry(1, 1);
+    this.pAttr = new THREE.InstancedBufferAttribute(new Float32Array(this.PN * 3), 3).setUsage(THREE.DynamicDrawUsage);
+    pgeo.setAttribute('aPool', this.pAttr);          // x: front 0..1, y: opacity, z: dryness
+    this.poolMat = new THREE.MeshStandardMaterial({
+      map: makePoolTexture(), transparent: true, depthWrite: false, roughness: 0.2, metalness: 0,
+      envMapIntensity: 0.45,              // a wet sheen, not a mirror of the sky that drowns the red
+      polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4,
+    });
+    this.poolMat.onBeforeCompile = (sh) => {
+      sh.vertexShader = sh.vertexShader
+        .replace('#include <common>', '#include <common>' + String.fromCharCode(10) + 'attribute vec3 aPool; varying vec3 vPool;')
+        .replace('#include <uv_vertex>', '#include <uv_vertex>' + String.fromCharCode(10) + 'vPool = aPool;');
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <common>', '#include <common>' + String.fromCharCode(10) + 'varying vec3 vPool;')
+        .replace('#include <map_fragment>', POOL_FRAG)
+        .replace('#include <roughnessmap_fragment>', 'float roughnessFactor = mix( 0.16, 0.66, vPool.z ) + ( 1.0 - pDepth ) * 0.12;');
+    };
+    this.poolMat.customProgramCacheKey = () => 'blood-pool-v1';
+    this.poolMesh = new THREE.InstancedMesh(pgeo, this.poolMat, this.PN);
+    this.poolMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.poolMesh.frustumCulled = false;
+    this.poolMesh.renderOrder = 2;
+    this.poolMesh.receiveShadow = true;
+    for (let i = 0; i < this.PN; i++) this.poolMesh.setMatrixAt(i, zero);
+    scene.add(this.poolMesh);
+    this.pools = [];
+    for (let i = 0; i < this.PN; i++) this.pools.push({ i, live: false, t: 0, x: 0, z: 0, reach: 0 });
+    this.pIdx = 0; this.pLive = 0;
+    this._pp = new THREE.Vector3(); this._pq = new THREE.Quaternion();
 
     /* ---- shell casings ---- */
     this.SH = 56;
@@ -405,14 +461,62 @@ export class Effects {
     }
   }
 
-  /** A body has come to rest: blood pools out beneath it over 1.6 s. */
-  bloodPool(pos) {
+  /**
+   * A body has come to rest: its blood runs out from under it. `scale` 1 is the
+   * body, about 0.55 a head wound. It spreads only as far as the ground stays
+   * level, so a pool never hangs off a ledge or runs up a wall.
+   */
+  bloodPool(pos, scale = 1) {
     if (!this.blood || !this.map) return;
     const h = this._bh || (this._bh = {});
     const g = this.map.raycast(pos.x, pos.y + 0.4, pos.z, 0, -1, 0, 2.5, h);
     if (!g || g.ny < 0.6) return;
-    this._bloodDecal(g.px, g.py, g.pz, g.nx, g.ny, g.nz, 2,
-      rng.range(1.0, 1.35), rng.range(1.0, 1.3), rng.gauss(), 0, rng.gauss(), 1.6, 0.95);
+    const gx = g.px, cy = g.py, gz = g.pz;
+    const n = (this._bn || (this._bn = new THREE.Vector3())).set(g.nx, g.ny, g.nz).normalize();
+    let cx = gx, cz = gz, reach = this._poolReach(gx, cy, gz, scale);
+    if (reach < 0.64 * scale) {
+      /* up against a crate or a wall: let it run out on the open side instead */
+      const off = 0.28 * scale;
+      for (let k = 0; k < 8; k++) {
+        const a = k * Math.PI / 4, x = gx + Math.cos(a) * off, z = gz + Math.sin(a) * off;
+        const r = this._poolReach(x, cy, z, scale);
+        if (r > reach) { reach = r; cx = x; cz = z; }
+      }
+    }
+    reach = Math.max(reach, 0.14 * scale);
+    const P = this.pools[this.pIdx = (this.pIdx + 1) % this.PN];
+    if (!P.live) this.pLive++;
+    P.live = true; P.t = 0; P.x = cx; P.z = cz; P.reach = reach;
+    const ang = rng() * Math.PI * 2;
+    const x = (this._bx || (this._bx = new THREE.Vector3())).set(Math.cos(ang), 0, Math.sin(ang));
+    x.addScaledVector(n, -x.dot(n)).normalize();
+    const y = (this._by || (this._by = new THREE.Vector3())).crossVectors(n, x);
+    this._m.makeBasis(x, y, n);
+    this._pq.setFromRotationMatrix(this._m);
+    const side = reach * 2 / 0.89;            // the front stops at 0.89 of the half-size
+    this._pp.set(cx + n.x * 0.004, cy + n.y * 0.004, cz + n.z * 0.004);
+    this._m.compose(this._pp, this._pq, this._s.set(side, side, 1));
+    this.poolMesh.setMatrixAt(P.i, this._m);
+    this.poolMesh.instanceMatrix.needsUpdate = true;
+    const A = this.pAttr.array;
+    A[P.i * 3] = 0.064; A[P.i * 3 + 1] = 1; A[P.i * 3 + 2] = 0;
+    this.pAttr.needsUpdate = true;
+  }
+
+  /* how far the ground stays level around (cx, cz) at height cy: eight
+     directions at growing radii, stopping at the first that is not */
+  _poolReach(cx, cy, cz, scale) {
+    const M = this.map, h2 = this._bh2 || (this._bh2 = {});
+    let reach = 0;
+    for (const R of [0.22, 0.36, 0.5, 0.64, 0.8]) {
+      const r = R * scale;
+      for (let k = 0; k < 8; k++) {
+        const a = k * Math.PI / 4, q = M.raycast(cx + Math.cos(a) * r, cy + 1.0, cz + Math.sin(a) * r, 0, -1, 0, 1.3, h2);
+        if (!q || Math.abs(q.py - cy) > 0.05 || q.ny < 0.9) return reach;
+      }
+      reach = r;
+    }
+    return reach;
   }
 
   _bloodDecal(px, py, pz, nx, ny, nz, tile, size, stretch, ax, ay, az, grow, alpha) {
@@ -453,6 +557,10 @@ export class Effects {
     this.bLive = 0;
     this.bloodMesh.instanceMatrix.needsUpdate = true;
     this.bFade.needsUpdate = true;
+    for (const P of this.pools) { P.live = false; this.poolMesh.setMatrixAt(P.i, zero); this.pAttr.array[P.i * 3 + 1] = 0; }
+    this.pLive = 0;
+    this.poolMesh.instanceMatrix.needsUpdate = true;
+    this.pAttr.needsUpdate = true;
   }
 
   /** The settings toggle. Switching blood off also wipes whatever is on the map. */
@@ -538,6 +646,27 @@ export class Effects {
       }
       this.bFade.needsUpdate = true;
       if (dirty) this.bloodMesh.instanceMatrix.needsUpdate = true;
+    }
+
+    /* pools: the front runs out fast and slows, the blood dries, then fades */
+    if (this.pLive > 0) {
+      const A = this.pAttr.array;
+      for (const P of this.pools) {
+        if (!P.live) continue;
+        P.t += dt;
+        if (P.t >= POOL_LIFE) {
+          P.live = false; this.pLive--;
+          A[P.i * 3 + 1] = 0;
+          this.poolMesh.setMatrixAt(P.i, this._zeroM || (this._zeroM = new THREE.Matrix4().makeScale(0, 0, 0)));
+          this.poolMesh.instanceMatrix.needsUpdate = true;
+          continue;
+        }
+        const k = Math.min(1, P.t / POOL_SPREAD), f = Math.min(1, (POOL_LIFE - P.t) / POOL_FADE);
+        A[P.i * 3] = 0.92 * (0.07 + 0.93 * (1 - Math.pow(1 - k, 2.4)));
+        A[P.i * 3 + 1] = f * f * (3 - 2 * f);
+        A[P.i * 3 + 2] = clamp((P.t - POOL_DRY[0]) / (POOL_DRY[1] - POOL_DRY[0]), 0, 1);
+      }
+      this.pAttr.needsUpdate = true;
     }
 
     /* tracers */

@@ -13,6 +13,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { buildMaterials, SURFACE_KIND, makeSkyTexture } from './textures.js';
+import { buildExtraMaterials } from './biomes.js';
+import { buildInstances } from './props.js';
 import { makeRng, clamp } from '../core/util.js';
 
 export const MAP_W = 62, MAP_D = 46;
@@ -24,6 +26,7 @@ const TILE = {
   metal: 2.4, wood: 1.8, roof: 2.2, sandbag: 1.2,
   paintA: 2.0, paintB: 2.0, paintC: 2.0, rubber: 1.0, glass: 2.0,
   drumA: 1.15, drumB: 1.15,
+  forest: 6.0, rock: 3.2, snow: 5.0, logwall: 2.4, rust: 2.4, grate: 1.6, brick: 2.2, glow: 2.0,
 };
 
 /* ---- box geometry with world-scaled UVs ---------------------------------- */
@@ -54,6 +57,7 @@ class MapBuilder {
   constructor() {
     this.boxes = [];      // { x0,y0,z0,x1,y1,z1, mat, standable, solid, vis }
     this.props = [];      // extra non-box visuals (Group)
+    this.insts = [];      // instanced shapes: { kind, x, y, z, ry, sx, sy, sz }
     this.spawnsA = []; this.spawnsB = [];
     this.lights = [];
   }
@@ -78,10 +82,10 @@ class MapBuilder {
    *  arrays they read, so a live `.length` bound would never terminate. */
   mirrored(fn) {
     const b0 = this.boxes.length, p0 = this.props.length,
-          sa = this.spawnsA.length, l0 = this.lights.length;
+          sa = this.spawnsA.length, l0 = this.lights.length, i0 = this.insts.length;
     fn();
     const b1 = this.boxes.length, p1 = this.props.length,
-          sa1 = this.spawnsA.length, l1 = this.lights.length;
+          sa1 = this.spawnsA.length, l1 = this.lights.length, i1 = this.insts.length;
     for (let i = b0; i < b1; i++) {
       const b = this.boxes[i];
       this.boxes.push({
@@ -95,6 +99,10 @@ class MapBuilder {
       p.rotation.y += Math.PI;
       this.props.push(p);
     }
+    for (let i = i0; i < i1; i++) {
+      const t = this.insts[i];
+      this.insts.push({ ...t, x: -t.x, z: -t.z, ry: t.ry + Math.PI });
+    }
     for (let i = sa; i < sa1; i++) {
       const s = this.spawnsA[i];
       this.spawnsB.push({ x: -s.x, y: s.y, z: -s.z, yaw: s.yaw + Math.PI });
@@ -103,6 +111,65 @@ class MapBuilder {
       const L = this.lights[i];
       this.lights.push({ ...L, x: -L.x, z: -L.z });
     }
+  }
+
+  /* ---- instanced props: a shape for the eye, and (mostly) a box for the rest */
+  /** Place an instanced shape. It never collides on its own - add a box for that. */
+  inst(kind, x, y, z, ry = 0, sx = 1, sy = sx, sz = sx) {
+    this.insts.push({ kind, x, y, z, ry, sx, sy, sz });
+  }
+  /** A tree: the shape, plus a trunk box that stops bodies, bullets and sight.
+      The crown is above head height and deliberately not solid. */
+  tree(kind, x, z, s = 1, ry = 0) {
+    const t = (kind.startsWith('pine') ? 0.36 : 0.5) * s;
+    this.add(x - t / 2, 0, z - t / 2, x + t / 2, 5.2 * s, z + t / 2, 'bark', { standable: false, vis: false });
+    this.inst(kind, x, 0, z, ry, s);
+  }
+  /** A boulder, its shape scaled to exactly this box. `flip` turns it half round. */
+  rock(cx, cz, w, h, d, flip = false, y = 0, kind = 'rock') {
+    this.add(cx - w / 2, y, cz - d / 2, cx + w / 2, y + h, cz + d / 2, 'rock', { vis: false });
+    this.inst(kind, cx, y, cz, flip ? Math.PI : 0, w, h, d);
+  }
+  /** A felled log lying along x or z. */
+  log(cx, cz, len, dia, axis = 'x', y = 0) {
+    const w = axis === 'x' ? len : dia, d = axis === 'x' ? dia : len;
+    this.add(cx - w / 2, y, cz - d / 2, cx + w / 2, y + dia, cz + d / 2, 'bark', { vis: false });
+    this.inst('log', cx, y, cz, axis === 'x' ? 0 : Math.PI / 2, len, dia, dia);
+  }
+  stump(x, z) {
+    this.add(x - 0.3, 0, z - 0.3, x + 0.3, 0.5, z + 0.3, 'bark', { vis: false });
+    this.inst('stump', x, 0, z);
+  }
+  /** Ground cover: shape only, and kept below a crouching player's eyes. */
+  bush(x, z, s = 1) { this.inst('bush', x, 0, z, (x * 7.3 + z * 3.1) % 6.28, s); }
+  /** Collision for anything round: three boxes whose corners sit on the circle,
+      so nobody stops against thin air at the corners of a square. */
+  round(cx, y, cz, r, h, mat, opt = {}) {
+    const o = { vis: false, standable: false, ...opt };
+    this.add(cx - 0.92 * r, y, cz - 0.38 * r, cx + 0.92 * r, y + h, cz + 0.38 * r, mat, o);
+    this.add(cx - 0.38 * r, y, cz - 0.92 * r, cx + 0.38 * r, y + h, cz + 0.92 * r, mat, o);
+    this.add(cx - 0.71 * r, y, cz - 0.71 * r, cx + 0.71 * r, y + h, cz + 0.71 * r, mat, o);
+  }
+  tank(cx, cz, r, h, kind = 'tank', y = 0) {
+    this.round(cx, y, cz, r, h, kind === 'tankRust' ? 'rust' : 'metal');
+    this.inst(kind, cx, y, cz, 0, 2 * r, h, 2 * r);
+  }
+  stack(cx, cz, r, h) { this.round(cx, 0, cz, r, h, 'rust'); this.inst('stack', cx, 0, cz, 0, 2 * r, h, 2 * r); }
+  dome(x, y, z, r) { this.inst('dome', x, y, z, 0, 2 * r); }
+  /** A horizontal pipe along x or z, centred on (cx, y, cz). */
+  pipe(cx, y, cz, len, dia, axis = 'x', solid = true) {
+    const w = axis === 'x' ? len : dia, d = axis === 'x' ? dia : len;
+    if (solid) this.add(cx - w / 2, y - dia / 2, cz - d / 2, cx + w / 2, y + dia / 2, cz + d / 2, 'metal', { vis: false, standable: false });
+    this.inst('pipe', cx, y - dia / 2, cz, axis === 'x' ? 0 : Math.PI / 2, len, dia, dia);
+  }
+  pipeV(cx, cz, y0, h, dia) {
+    this.add(cx - dia / 2, y0, cz - dia / 2, cx + dia / 2, y0 + h, cz + dia / 2, 'metal', { vis: false, standable: false });
+    this.inst('pipeV', cx, y0, cz, 0, dia, h, dia);
+  }
+  lamp(x, z, light = true) {
+    this.add(x - 0.06, 0, z - 0.06, x + 0.06, 3.2, z + 0.06, 'metal', { vis: false, standable: false });
+    this.inst('lamp', x, 0, z);
+    if (light) this.lights.push({ x, y: 3.1, z, color: 0xffd9a0, intensity: 5, dist: 12 });
   }
 
   /* ---- wall with door / window openings ---------------------------------- */
@@ -137,14 +204,14 @@ class MapBuilder {
   }
 
   /** Solid staircase (each tread is a full-height block, so nothing to fall into). */
-  stairs(x0, z0, x1, z1, yBase, yTop, dir, steps = 12) {
+  stairs(x0, z0, x1, z1, yBase, yTop, dir, steps = 12, mat = 'concrete') {
     const n = steps;
     const rise = (yTop - yBase) / n;
     for (let i = 0; i < n; i++) {
       const t0 = i / n, t1 = (i + 1) / n;
       const y = yBase + rise * (i + 1);
-      if (dir === 'x') this.add(x0 + (x1 - x0) * t0, yBase, z0, x0 + (x1 - x0) * t1, y, z1, 'concrete');
-      else             this.add(x0, yBase, z0 + (z1 - z0) * t0, x1, y, z0 + (z1 - z0) * t1, 'concrete');
+      if (dir === 'x') this.add(x0 + (x1 - x0) * t0, yBase, z0, x0 + (x1 - x0) * t1, y, z1, mat);
+      else             this.add(x0, yBase, z0 + (z1 - z0) * t0, x1, y, z0 + (z1 - z0) * t1, mat);
     }
   }
 }
@@ -152,7 +219,7 @@ class MapBuilder {
 /* ============================================================================
    The map itself
    ========================================================================== */
-function describe(B) {
+function describeDustline(B) {
   /* ---------------- ground ---------------- */
   B.add(-HALF_W, -1.0, -HALF_D, HALF_W, 0, HALF_D, 'dirt', { standable: true });
   // central asphalt road (visual only, sits flush on the dirt)
@@ -374,9 +441,38 @@ const MAX_DROP = 2.85;
 const HEAD_CLEAR = 1.72;
 export const NAV_CELL = 0.7;
 
+/* Dustline's decorative pass: roadside poles and scattered rubble. Shape only. */
+function dustlineDecor({ group: dec, mats, rng: r, map }) {
+    // roadside poles + wires
+    for (let i = 0; i < 6; i++) {
+      const x = -26 + i * 10.5, z = i % 2 ? -19.5 : 19.5;
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.12, 7.2, 6), mats.metal);
+      pole.position.set(x, 3.6, z); pole.castShadow = true; dec.add(pole);
+      const arm = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.09, 0.09), mats.metal);
+      arm.position.set(x + (z < 0 ? 0.7 : -0.7), 6.9, z); arm.castShadow = true; dec.add(arm);
+    }
+    // scattered rubble
+    const rubGeos = [];
+    for (let i = 0; i < 130; i++) {
+      const s = r.range(0.08, 0.30);
+      const gg = new THREE.BoxGeometry(s, s * r.range(0.4, 0.9), s * r.range(0.6, 1.3));
+      gg.rotateY(r() * Math.PI); gg.rotateX(r.range(-0.3, 0.3));
+      let x, z, tries = 0;
+      do { x = r.range(-HALF_W + 1, HALF_W - 1); z = r.range(-HALF_D + 1, HALF_D - 1); tries++; }
+      while (map.pointBlocked(x, 0.2, z) && tries < 8);
+      gg.translate(x, s * 0.2, z);
+      rubGeos.push(gg);
+    }
+    const rub = new THREE.Mesh(mergeGeometries(rubGeos, false), mats.concrete);
+    rub.castShadow = true; rub.receiveShadow = true; dec.add(rub);
+}
+
 export class GameMap {
-  constructor() {
-    this.mats = buildMaterials();
+  constructor(def = DUSTLINE) {
+    this.def = def; this.id = def.id; this.name = def.name;
+    this.W = def.w; this.D = def.d; this.halfW = def.w / 2; this.halfD = def.d / 2;
+    this.zones = def.zones || []; this.hotspots = def.hotspots || [];
+    this.mats = { ...buildMaterials(), ...buildExtraMaterials(def.materials || []) };
     // all box materials use geometry-baked UVs
     for (const k of Object.keys(this.mats)) {
       const m = this.mats[k];
@@ -384,8 +480,9 @@ export class GameMap {
     }
 
     const B = new MapBuilder();
-    describe(B);
+    def.describe(B, this);
     this.boxes = B.boxes;
+    this.insts = B.insts;
     this.spawnsA = B.spawnsA;
     this.spawnsB = B.spawnsB;
     this.pointLights = B.lights;
@@ -396,15 +493,15 @@ export class GameMap {
     this._buildNav();
     this._buildNavLinks();
     this._buildCover();
-    this.skyTexture = makeSkyTexture();
+    this.skyTexture = makeSkyTexture(def.env && def.env.sky);
   }
 
   /* ---- uniform grid broadphase over solids ---- */
   _buildGrid() {
     this.gcell = 4.0;
-    this.gx0 = -HALF_W - 12; this.gz0 = -HALF_D - 12;
-    this.gnx = Math.ceil((MAP_W + 24) / this.gcell);
-    this.gnz = Math.ceil((MAP_D + 24) / this.gcell);
+    this.gx0 = -this.halfW - 12; this.gz0 = -this.halfD - 12;
+    this.gnx = Math.ceil((this.W + 24) / this.gcell);
+    this.gnz = Math.ceil((this.D + 24) / this.gcell);
     this.grid = new Array(this.gnx * this.gnz);
     for (let i = 0; i < this.grid.length; i++) this.grid[i] = [];
     for (const b of this.solids) {
@@ -459,31 +556,10 @@ export class GameMap {
       m.castShadow = true; m.receiveShadow = true;
       g.add(m);
     }
-    // ---- decorative props that are not collision
+    // ---- instanced props, then the map's own decorative pass
+    if (this.insts.length) g.add(buildInstances(this.insts, this));
     const dec = new THREE.Group(); dec.name = 'decor';
-    const r = makeRng(0x0DEC);
-    // roadside poles + wires
-    for (let i = 0; i < 6; i++) {
-      const x = -26 + i * 10.5, z = i % 2 ? -19.5 : 19.5;
-      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.12, 7.2, 6), this.mats.metal);
-      pole.position.set(x, 3.6, z); pole.castShadow = true; dec.add(pole);
-      const arm = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.09, 0.09), this.mats.metal);
-      arm.position.set(x + (z < 0 ? 0.7 : -0.7), 6.9, z); arm.castShadow = true; dec.add(arm);
-    }
-    // scattered rubble
-    const rubGeos = [];
-    for (let i = 0; i < 130; i++) {
-      const s = r.range(0.08, 0.30);
-      const gg = new THREE.BoxGeometry(s, s * r.range(0.4, 0.9), s * r.range(0.6, 1.3));
-      gg.rotateY(r() * Math.PI); gg.rotateX(r.range(-0.3, 0.3));
-      let x, z, tries = 0;
-      do { x = r.range(-HALF_W + 1, HALF_W - 1); z = r.range(-HALF_D + 1, HALF_D - 1); tries++; }
-      while (this.pointBlocked(x, 0.2, z) && tries < 8);
-      gg.translate(x, s * 0.2, z);
-      rubGeos.push(gg);
-    }
-    const rub = new THREE.Mesh(mergeGeometries(rubGeos, false), this.mats.concrete);
-    rub.castShadow = true; rub.receiveShadow = true; dec.add(rub);
+    if (this.def.decor) this.def.decor({ group: dec, mats: this.mats, rng: makeRng(0x0DEC), map: this });
     g.add(dec);
     return g;
   }
@@ -553,9 +629,14 @@ export class GameMap {
   /* ---- navigation -------------------------------------------------------- */
   _buildNav() {
     const cs = NAV_CELL;
-    const nx = this.nx = Math.ceil(MAP_W / cs);
-    const nz = this.nz = Math.ceil(MAP_D / cs);
-    this.navX0 = -HALF_W; this.navZ0 = -HALF_D;
+    /* Symmetric about the origin. Every map is a 180-degree mirror, and a grid
+       that starts at the west edge only lines up with one half: on Foundry a
+       1.3 m door had walkable cells on the west office and none on its mirror
+       in the east office, so no bot could ever enter it. */
+    const kx = Math.ceil(this.halfW / cs), kz = Math.ceil(this.halfD / cs);
+    const nx = this.nx = 2 * kx;
+    const nz = this.nz = 2 * kz;
+    this.navX0 = -kx * cs; this.navZ0 = -kz * cs;
     const MAXS = 2;
     const h = this.navH = new Float32Array(nx * nz * MAXS).fill(NaN);
     const nSurf = this.navN = new Uint8Array(nx * nz);
@@ -985,4 +1066,37 @@ export class GameMap {
     for (const s of alt) consider(s, -120);   // last resort: cross-spawn
     return best || pool[0];
   }
+}
+
+/* ============================================================================
+   Dustline's definition. The other maps live in ./maps/, and all of them are
+   gathered in ./maps/index.js.
+   ========================================================================== */
+export const DUSTLINE = {
+  id: 'dustline', name: 'DUSTLINE', code: 'MP_DUSTLINE', swatch: '#c9a86a',
+  blurb: 'Desert compounds, two warehouses, a raised centre. Three fast lanes.',
+  w: MAP_W, d: MAP_D,
+  describe: describeDustline, decor: dustlineDecor,
+  env: {},        // main.js and makeSkyTexture default to Dustline's own dusk
+  zones: [
+    ['WEST COMPOUND', -21, -11], ['EAST COMPOUND', 21, 11],
+    ['NORTH WAREHOUSE', -3.5, -16.5], ['SOUTH WAREHOUSE', 2, 16.5],
+    ['CENTRE', 0, -5.5], ['ROAD', -28, 1.5], ['ROAD', 28, -1.5],
+  ],
+  hotspots: [
+    [0, 0, 3], [-8, -3, 1], [8, 3, 1], [-20, -11, 2], [20, 11, 2], [-21, -7, 1], [21, 7, 1],
+    [-3.5, -16.5, 2], [3.5, 16.5, 2], [-16, 9.5, 1], [16, -9.5, 1], [-27, 3, 0], [27, -3, 0],
+    [-13, 15.5, 0], [13, -15.5, 0], [-11, -8.5, 1], [11, 8.5, 1],
+  ],
+};
+
+/** Layout only - boxes, spawns, props - for the briefing's tactical map.
+ *  No meshes and no navmesh, so it costs a few milliseconds. */
+export function previewMap(def) {
+  const B = new MapBuilder();
+  def.describe(B, null);
+  return {
+    def, id: def.id, name: def.name, W: def.w, D: def.d, halfW: def.w / 2, halfD: def.d / 2,
+    zones: def.zones || [], boxes: B.boxes, spawnsA: B.spawnsA, spawnsB: B.spawnsB, insts: B.insts,
+  };
 }

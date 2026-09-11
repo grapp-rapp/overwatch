@@ -22,8 +22,9 @@ hips turn toward the velocity vector while an additive twist runs up the spine t
 the aim direction, which is what makes strafing read correctly from a single
 forward walk cycle. Two-bone IK puts the right hand on the grip and the left on
 the foregrip; the weapon is parented to the hand *bone*, so it inherits every bit
-of skeletal motion. On death the mixer stops and the body falls under a short
-rigid-body solve while the skeleton relaxes to a limp pose.
+of skeletal motion. On death the mixer stops and the body drops under a short
+rigid-body solve while the skeleton relaxes to a limp pose; about three seconds
+later the body fades away, and its blood stays.
 
 **Hitboxes are capsules between bone pairs**, so hit registration follows the
 animation exactly — head, neck, chest, gut, four arm segments, four leg segments.
@@ -57,16 +58,18 @@ the corroded patches stop answering light like metal. Drums are the same panel
 turned a quarter turn so the ribs hoop the barrel. Sandbags are woven hessian
 over lumpy, overfilled bags. Nothing in the map is flat untinted colour.
 
-**Melee lands like a swing, not a laser.** V (or F) swings the rifle butt. The
+**Melee lands like a swing, not a laser.** V (or F) throws a punch. The
 hit is tested against a 28-degree arc and 2.3 m of reach, resolves at the point
 in the animation where the weapon arrives, never goes through a wall, and aborts
 a reload without costing a round. Your third-person body swings too, so it shows
 in the killcam.
 
 **Blood is optional.** A BLOOD toggle in settings, on by default. With it on,
-hits spray, splatter the surface behind the target, drip onto the ground, and
-bodies pool once they settle - lit and wet, dark where it is deep. Every mark is
-gone five seconds after it lands. With it off, a hit shows a grey fabric puff.
+hits spray, splatter the surface behind the target and drip onto the ground, and
+a body bleeds out: the pool runs out from under it along a ragged front, glossy
+and red at the thin edge and near black where it is deep, keeps spreading after
+the body has gone, dries darker and duller, and fades out over about 45 seconds.
+Splatters last 12 seconds. With it off, a hit shows a grey fabric puff.
 
 **Everything you hear is synthesised at boot.** A gunshot is four layers: the
 transient crack, a pitch-swept low-end body, mechanical action a few tens of
@@ -80,6 +83,12 @@ textures (albedo, roughness and Sobel-derived normals from the same height
 field), the sky, every weapon, all the gear, the aircraft, and the entire map.
 
 ---
+
+**You have a body.** Look down and you see your own legs and boots, walking
+with you, while your shadow comes from the whole operator. A punch drops the gun
+out of the way and throws your fist from the lower left, on the same timing
+curve as the hit itself: a real hand, curled fingers and a wrapped thumb, in the
+skin tone you pick on the SKINS tab.
 
 ## Controls
 
@@ -111,7 +120,6 @@ degrees.
 |---|---|---|
 | 3 | **UAV** | Reveals hostiles on the minimap |
 | 7 | **Attack helicopter** | AI gunship orbits and engages |
-| 11 | **Chopper gunner** | You take the minigun, 40 seconds |
 
 ## The team airstrike
 
@@ -132,14 +140,40 @@ worth remembering that they are holding one for you. The enemy AI plays it the
 same way: it waits, watches for two or more of your side exposed at once, and
 spends its single strike on that — which means some matches it never comes.
 
-## The map
+## The maps
 
-MP_DUSTLINE, 62 × 46 m, three lanes, 180° rotationally symmetric so neither team
-has an advantage. Two two-storey compounds with staircases and upper-floor
-firing positions overlooking the centre, two open warehouses with catwalks, a
-raised centre pad with ramps and sandbag emplacements, shipping containers,
-jersey barriers and a wrecked truck. Spawns are scored at selection time against
-every live enemy and never place you where one can already see you.
+Pick one on the briefing screen; the tactical map shows its layout before you
+deploy. Every map is 180-degree rotationally symmetric, so neither team has the
+better half, and every map is built the same way: one list of axis-aligned boxes
+for collision, bullets, line of sight and the navmesh, with trees, rocks and
+tanks drawn as instanced shapes over their boxes.
+
+| Map | Size | |
+|---|---|---|
+| **DUSTLINE** | 62 x 46 m | Desert compounds with upper floors, two warehouses with catwalks, a raised centre pad. Three fast lanes. |
+| **TIMBERLINE** | 64 x 48 m | A logging camp in pine and oak woods. Trunks break every sightline; a railed watchtower on each side sees over them; an open sawmill in the middle. |
+| **WHITEOUT** | 64 x 46 m | An arctic radar station. Long lanes over snow, two station modules to clear room by room, a radar tower in the middle with nowhere to hide. |
+| **FOUNDRY** | 62 x 46 m | A steelworks at dusk. A furnace hall across the rail line with a catwalk down each side; rusted yards outside. |
+
+Each brings its own sky, fog, sun and exposure. Spawns are scored at selection
+time against every live enemy and never place you where one can already see you.
+
+## Skins
+
+Fifteen skins on the **SKINS** tab: five free, ten bought with headshots. Every
+headshot kill banks one headshot for good (the bank and your unlocks are kept in
+the browser's localStorage). Unlocking spends from the bank; equipping is free.
+
+| Free | Bought with headshots |
+|---|---|
+| STANDARD ISSUE, WOODLAND, DESERT, ARCTIC, URBAN DIGITAL | TIGER STRIPE 1, NIGHT OPS 2, CARBON 2, RED DRAGON 3, JUNGLE 3, DEEP OCEAN 4, VOLCANIC 5, NEON SYNTH 6, CHROME 8, GOLD 10 |
+
+A skin dresses your guns where a real camo goes (receiver, furniture,
+handguard, magazine; never the barrel, bolt, slide or glass), your punching
+sleeve, and your own operator: the legs you see when you look down,
+and all of you in a killcam. Bots keep their faction colours, so a team still
+reads at a glance. VOLCANIC and NEON SYNTH glow; CHROME and GOLD are mirror
+metal.
 
 ## Project layout
 
@@ -149,10 +183,14 @@ src/
   main.js             boot, render loop, lighting, LOD and culling
   core/               input, synthesised audio, shared maths
   world/              procedural textures, the map, collision, navmesh, cover
+    maps/             the map definitions: layout, sky and light, zones, AI hotspots
+    biomes.js         surfaces for the newer maps, built only when one is loaded
+    props.js          instanced trees, rocks, tanks, domes, pipes
   chars/              rigged character, animation stack, IK, hit capsules
   weapons/            weapon table, procedural models, shot resolution, viewmodel
   ai/                 perception, states, pathing, cover selection, aiming
-  game/               match flow, HUD, menu, effects, killcam, killstreaks
+  game/               match flow, HUD, menu, effects, killcam, killstreaks,
+                      skins (skins.js) and their camo patterns (camo.js)
   ui/style.css        interface
 tools/
   serve.mjs           static dev server
@@ -161,7 +199,7 @@ tools/
   qa-browser.js       the test harness (see BUILD_NOTES)
   qa-capture.js       screenshot pipeline (WebGL + composited HUD)
 dev/chartest.html     character rig / animation / IK inspector
-qa/                   captured screenshots
+qa/                   captured screenshots (JPEG)
 ```
 
 ## Documentation

@@ -71,7 +71,7 @@ async function domToImage(el, w, h) {
 }
 
 /**
- * Capture the current frame (3D + overlay) and save it as qa/<name>.png.
+ * Capture the current frame (3D + overlay) and save it as qa/<name>.jpg.
  * @param name    file name without extension
  * @param opts    { overlay: element id to composite (default the visible one) }
  */
@@ -129,7 +129,7 @@ export async function capture(name, opts = {}) {
   }
 
   // 3. ship it
-  const data = out.toDataURL('image/png');
+  const data = out.toDataURL('image/jpeg', 0.88);   // ~10x smaller than PNG at 1080p
   const res = await fetch('/_qa/' + encodeURIComponent(name), { method: 'POST', body: data });
   const bytes = await res.text();
   return { name, width: w, height: h, bytes: Number(bytes) || 0, hadGL: !!glData, overlays: ids };

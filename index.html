@@ -49,6 +49,7 @@
         <button class="tab active" data-tab="briefing">BRIEFING</button>
         <button class="tab" data-tab="primary">PRIMARY</button>
         <button class="tab" data-tab="loadout">LOADOUT</button>
+        <button class="tab" data-tab="skins">SKINS</button>
         <button class="tab" data-tab="controls">CONTROLS</button>
       </nav>
       <div class="mh-right">
@@ -60,7 +61,8 @@
     <section class="pane active" data-pane="briefing">
       <div class="briefing">
         <div class="panel map-panel">
-          <div class="panel-hd"><h2>TACTICAL OVERVIEW</h2><span class="pill">MP_DUSTLINE · 62×46m</span></div>
+          <div class="panel-hd"><h2>TACTICAL OVERVIEW</h2><span class="pill" id="mapPill">MP_DUSTLINE · 62×46m</span></div>
+          <div class="map-sel" id="mapSel"></div>
           <div class="tacmap-wrap">
             <canvas id="tacmap" width="760" height="560"></canvas>
             <div class="tacmap-legend">
@@ -165,6 +167,24 @@
     </section>
 
     <!-- ---- CONTROLS ---- -->
+    <!-- ---- SKINS: five free, ten bought with headshot kills ---- -->
+    <section class="pane" data-pane="skins">
+      <div class="armory">
+        <div class="panel skin-grid-panel">
+          <div class="panel-hd"><h2>SKINS</h2><span class="pill hs-bank" id="hsBank">◆ 0 HEADSHOTS</span></div>
+          <div class="skin-grid" id="skinGrid"></div>
+          <div class="sk-hint">Every headshot kill banks <b>◆ 1</b>. Spend them here &mdash; unlocks are permanent. A skin dresses your guns, your gloves and sleeves, and your operator.</div>
+        </div>
+        <div class="panel skin-detail-panel">
+          <div class="panel-hd"><h2 id="skName">&mdash;</h2><span class="pill" id="skCost"></span></div>
+          <canvas id="skinRender" width="640" height="300"></canvas>
+          <div class="sk-desc" id="skDesc"></div>
+          <div class="sk-actions"><button class="sk-btn" id="skBtn">EQUIP</button><span class="sk-note" id="skNote"></span></div>
+          <div class="sk-hand"><span class="sk-hand-k">YOUR HAND</span><div class="sk-tones" id="skTones"></div></div>
+        </div>
+      </div>
+    </section>
+
     <section class="pane" data-pane="controls">
       <div class="controls">
         <div class="panel">
@@ -269,13 +289,6 @@
     <div class="kc-top"><div class="kc-label">KILLCAM</div><div class="kc-killer" id="kcKiller">—</div></div>
     <div class="kc-bars"><div class="kc-bar t"></div><div class="kc-bar b"></div></div>
     <div class="kc-bottom"><div class="kc-wep" id="kcWep">—</div><div class="kc-skip">RESPAWNING IN <b id="kcCount">5</b> · <span class="kbd">SPACE</span> SKIP</div></div>
-  </div>
-
-  <!-- killstreak select / chopper gunner overlay -->
-  <div id="gunnerHud" class="hidden">
-    <svg viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid slice" id="gunnerSvg"></svg>
-    <div class="gg-top" id="ggTop">CHOPPER GUNNER</div>
-    <div class="gg-bottom"><span id="ggTime">40</span>s · <span id="ggAmmo">∞</span></div>
   </div>
 
   <!-- airstrike marker select -->

@@ -11,6 +11,7 @@
    ========================================================================== */
 
 import { underOpenSky } from '../src/weapons/combat.js';
+import { MAP_ORDER } from '../src/world/maps/index.js';
 
 const G = () => window.__game;
 const T = () => window.__THREE;
@@ -18,6 +19,60 @@ const T = () => window.__THREE;
 function pct(a, b) { return b ? (a / b * 100).toFixed(1) + '%' : '—'; }
 
 /* ---------------------------------------------------------------- helpers */
+
+/* search bounds for the loaded map, 3 m inside its edge (28 x 20 on Dustline, as before) */
+const BW = () => G().map.halfW - 3, BD = () => G().map.halfD - 3;
+
+/* Flat open ground with nothing solid within `side` m sideways, from `behind`
+   m back to `ahead` m forward in Z, at any height a body occupies. Replaces
+   the Dustline coordinates the melee, blood and controls tests hard-coded. */
+function openSpot(ahead = 3.4, side = 1.4, behind = 0) {
+  const g = G(), m = g.map;
+  for (let x = -BW(); x <= BW(); x += 0.5) {
+    for (let z = -BD() + behind; z <= BD() - ahead; z += 0.5) {
+      let ok = true;
+      for (let dz = -behind; dz <= ahead && ok; dz += 0.5) {
+        for (let dx = -side; dx <= side && ok; dx += 0.35) {
+          if (Math.abs(g.groundHeight(x + dx, z + dz, 0.5, 0.4)) > 0.01) ok = false;
+          else if (m.pointBlocked(x + dx, 0.3, z + dz, 0.45) || m.pointBlocked(x + dx, 1.4, z + dz, 0.45)) ok = false;
+        }
+      }
+      if (ok) return { x, z };
+    }
+  }
+  return null;
+}
+
+/* A route for a map with no authored one: floor points spread over the whole
+   map by farthest-point sampling, visited nearest-first, then every elevated
+   place the map's definition says must be reachable, and back down again. */
+function autoRoute(m) {
+  const cand = [];
+  for (let x = 1.5 - m.halfW; x <= m.halfW - 1.5; x += 1.4) {
+    for (let z = 1.5 - m.halfD; z <= m.halfD - 1.5; z += 1.4) {
+      const c = m.navIndex(x, z);
+      if (!m.navN[c]) continue;
+      const y = m.navH[c * m.MAXS];
+      if (y > 0.3 || m.pointBlocked(x, y + 0.9, z, 0)) continue;
+      cand.push([x, z, y]);
+    }
+  }
+  const d2 = (a, b) => (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2;
+  const pick = [[m.spawnsA[0].x, m.spawnsA[0].z, 0]], near = cand.map(c => d2(c, pick[0]));
+  while (pick.length < 36 && cand.length) {
+    let bi = 0; for (let i = 1; i < cand.length; i++) if (near[i] > near[bi]) bi = i;
+    pick.push(cand[bi]);
+    for (let i = 0; i < cand.length; i++) near[i] = Math.min(near[i], d2(cand[i], cand[bi]));
+  }
+  const route = [pick.shift()];
+  while (pick.length) {
+    const last = route[route.length - 1];
+    let bi = 0; for (let i = 1; i < pick.length; i++) if (d2(pick[i], last) < d2(pick[bi], last)) bi = i;
+    route.push(pick.splice(bi, 1)[0]);
+  }
+  for (const q of (m.def && m.def.mustReach) || []) route.push(q, [q[0] + 3, q[1], 0]);
+  return route;
+}
 
 /**
  * Bring the match back to a clean, live state with the player alive.
@@ -35,6 +90,8 @@ async function ensureLive() {
   const g = G();
   if (g.state === 'MENU' || g.state === 'RESULT' || g.matchOver) g.deploy();
   await new Promise(r => setTimeout(r, 80));
+  // keys only count once pointer lock is taken or refused; some tabs refuse slowly
+  for (let i = 0; i < 60 && !(g.input.locked || g.input.lockUnavailable); i++) await new Promise(r => setTimeout(r, 50));
   if (g.state === 'KILLCAM') g.endKillcam();
   if (!g.me.alive && g.state === 'LIVE') g.spawn(g.me);
   if (g.strikeMode) g.closeStrikeSelect();
@@ -110,13 +167,13 @@ export function testBoot() {
 function findClearLane(range) {
   const g = G(), m = g.map;
   const dirs = [[0, 1], [1, 0], [0.7071, 0.7071], [-0.7071, 0.7071]];
-  for (let ax = -28; ax <= 28; ax += 1.5) {
-    for (let az = -20; az <= 20; az += 1.5) {
+  for (let ax = -BW(); ax <= BW(); ax += 1.5) {
+    for (let az = -BD(); az <= BD(); az += 1.5) {
       if (Math.abs(g.groundHeight(ax, az, 40, 0.36)) > 0.01) continue;
       if (m.pointBlocked(ax, 1.2, az, 0.5)) continue;
       for (const [ux, uz] of dirs) {
         const bx = ax + ux * range, bz = az + uz * range;
-        if (Math.abs(bx) > 29 || Math.abs(bz) > 21) continue;
+        if (Math.abs(bx) > BW() + 1 || Math.abs(bz) > BD() + 1) continue;
         if (Math.abs(g.groundHeight(bx, bz, 40, 0.36)) > 0.01) continue;
         if (m.pointBlocked(bx, 1.2, bz, 0.5)) continue;
         let clear = true;
@@ -288,8 +345,9 @@ export function testWallPenetrationHonesty() {
   let mismatches = 0, samples = 0, blocked = 0;
   const rng = (s => () => (s = (s * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff)(42);
   for (let i = 0; i < 4000; i++) {
-    const ax = rng() * 60 - 30, az = rng() * 44 - 22;
-    const bx = rng() * 60 - 30, bz = rng() * 44 - 22;
+    const HX = G().map.halfW - 1, HZ = G().map.halfD - 1;
+    const ax = (rng() * 2 - 1) * HX, az = (rng() * 2 - 1) * HZ;
+    const bx = (rng() * 2 - 1) * HX, bz = (rng() * 2 - 1) * HZ;
     const ay = 1.55, by = 1.55;
     const los = map.lineOfSight(ax, ay, az, bx, by, bz);
     const dx = bx - ax, dy = by - ay, dz = bz - az;
@@ -323,7 +381,7 @@ export function testWallPenetrationHonesty() {
 export function testMapWalk() {
   const g = G(), me = g.me;
   const saved = { pos: me.pos.clone(), yaw: me.yaw, vel: me.vel.clone(), health: me.health };
-  const route = [
+  const authored = [
     // --- perimeter loop, well clear of the wall ---
     [-28.5, 20.5], [-14, 20.5], [0, 20.5], [14, 20.5], [28.5, 20.5],
     [28.5, 8], [28.5, -8], [28.5, -20.5],
@@ -348,6 +406,7 @@ export function testMapWalk() {
     // --- back to spawn ---
     [0, 12], [0, -12], [-28, 12],
   ];
+  const route = g.map.id === 'dustline' ? authored : autoRoute(g.map);
 
   const unreachable = [], blocked = [], legs = [];
   me.alive = true; me.health = 1e6; me.crouch = 0; me.adsW = 0;
@@ -430,8 +489,8 @@ export function testMapWalk() {
   /* --- wedge sweep: from every standable cell, can the capsule get out? --- */
   const wedges = [];
   let tested = 0;
-  for (let x = -30; x <= 30; x += 1.25) {
-    for (let z = -22; z <= 22; z += 1.25) {
+  for (let x = 1 - g.map.halfW; x <= g.map.halfW - 1; x += 1.25) {
+    for (let z = 1 - g.map.halfD; z <= g.map.halfD - 1; z += 1.25) {
       const gy = g.groundHeight(x, z, 40, 0.36);
       if (g.map.pointBlocked(x, gy + 0.9, z, 0)) continue;   // solid: not a place a player can be
       tested++;
@@ -862,6 +921,9 @@ export async function testControls() {
      worse, left the next test starting inside a killcam */
   const savedBots = g.actors.map(a => a.bot);
   for (const a of g.actors) a.bot = null;
+  /* start on open ground: a tree beside the spawn turns a direction test into a collision test */
+  const cs = openSpot(3.2, 3.2, 3.2);
+  if (cs) { me.pos.set(cs.x, g.groundHeight(cs.x, cs.z, 0.5, 0.4), cs.z); me.vel.set(0, 0, 0); }
 
   const basis = () => {
     g.camera.updateMatrixWorld(true);
@@ -940,7 +1002,7 @@ export async function testTeamAirstrike() {
   /* A sheltered spot with an exposed one inside a single blast radius of it —
      the pair is what makes the open-sky rule falsifiable rather than decorative. */
   let pair = null;
-  for (let x = -28; x <= 28 && !pair; x += 0.5) for (let z = -20; z <= 20; z += 0.5) {
+  for (let x = -BW(); x <= BW() && !pair; x += 0.5) for (let z = -BD(); z <= BD(); z += 0.5) {
     const gy = g.groundHeight(x, z, 0.5, 0.4);
     if (gy > 0.3 || underOpenSky(g.world, x, gy + 1.7, z)) continue;
     for (const [dx, dz] of [[2.5, 0], [-2.5, 0], [0, 2.5], [0, -2.5], [2, 2], [-2, -2]]) {
@@ -1067,7 +1129,9 @@ export async function testMelee() {
   };
 
   /* open ground: the same spot the airstrike test uses; face +Z, offset sideways */
-  const OX = -30, OZ = -5, OY = g.groundHeight(OX, OZ, 0.5, 0.4);
+  const spot = openSpot(3.4, 1.4);
+  if (!spot) { for (let i = 0; i < g.actors.length; i++) g.actors[i].bot = saved[i]; return { name: 'melee', pass: false, note: 'no open ground' }; }
+  const OX = spot.x, OZ = spot.z, OY = g.groundHeight(OX, OZ, 0.5, 0.4);
   const open = (dist, lateral, p, crouch = 0) => {
     stage(OX, OZ, OY, OX + lateral, OZ + dist, OY, crouch, p);
     yaw = 0; me.yaw = 0;
@@ -1082,8 +1146,8 @@ export async function testMelee() {
 
   /* through a wall: two open spots 1.4 m apart with the chest line blocked */
   let wall = null;
-  for (let x = -28; x <= 28 && !wall; x += 0.5) {
-    for (let z = -20; z <= 20 && !wall; z += 0.5) {
+  for (let x = -BW(); x <= BW() && !wall; x += 0.5) {
+    for (let z = -BD(); z <= BD() && !wall; z += 0.5) {
       const y0 = g.groundHeight(x, z, 0.5, 0.4);
       if (y0 > 0.3 || solidAt(x, z, y0)) continue;
       for (const [dx, dz] of [[1.4, 0], [-1.4, 0], [0, 1.4], [0, -1.4]]) {
@@ -1165,12 +1229,19 @@ export async function testBlood() {
 
   /* a point 1.2 to 1.6 m in front of a wall, facing it */
   let spot = null;
-  for (let x = -28; x <= 28 && !spot; x += 0.5) {
-    for (let z = -20; z <= 20 && !spot; z += 0.5) {
+  for (let x = -BW(); x <= BW() && !spot; x += 0.5) {
+    for (let z = -BD(); z <= BD() && !spot; z += 0.5) {
       if (g.groundHeight(x, z, 0.5, 0.4) > 0.3) continue;
       for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
         const h = M.raycast(x, 1.3, z, dx, 0, dz, 3, {});
-        if (h && h.t > 1.2 && h.t < 1.6 && Math.abs(h.ny) < 0.2 && h.surface !== 'glass') { spot = { x, z, dx, dz }; break; }
+        if (!h || h.t <= 1.2 || h.t >= 1.6 || Math.abs(h.ny) >= 0.2 || h.surface === 'glass') continue;
+        /* a wall, not a post: the same face 0.6 m either side and lower down. On
+           Whiteout the first surface found was a 0.2 m radar leg, and splatter missed it. */
+        const wide = [[0.6, 1.3], [-0.6, 1.3], [0, 0.9]].every(([o, y]) => {
+          const k = M.raycast(x - dz * o, y, z + dx * o, dx, 0, dz, 3, {});
+          return k && Math.abs(k.t - h.t) < 0.05;
+        });
+        if (wide) { spot = { x, z, dx, dz }; break; }
       }
     }
   }
@@ -1183,28 +1254,39 @@ export async function testBlood() {
   const onWall = marks.filter(b => Math.abs(normalOf(b).y) < 0.5);
   const onGround = marks.filter(b => normalOf(b).y > 0.8);
 
-  /* one wall mark's life: full at 3 s, fading by 4.5 s, gone by 5 s */
+  /* one wall mark's life: full at 6 s, fading by 10 s, gone by 12 s */
   const tracked = onWall[0] || marks[0];
   const fadeAt = (t) => {
     while (tracked && tracked.live && tracked.t < t) window.__step(1 / 60);
     return tracked && tracked.live ? E.bFade.array[tracked.i] : 0;
   };
-  const f30 = fadeAt(3.0), f45 = fadeAt(4.5), f505 = fadeAt(5.05);
-  const goneAtFive = !!tracked && !tracked.live;
+  const f60 = fadeAt(6.0), f100 = fadeAt(10.0), f1205 = fadeAt(12.05);
+  const goneAtTwelve = !!tracked && !tracked.live;
 
   /* a kill pools blood under the body once it has come to rest */
   E.clearBlood();
   const foe = g.actors.find(a => a.team !== g.me.team);
   foe.alive = true; foe.health = 100; if (foe.char) foe.char.revive();
-  const fy = g.groundHeight(-30, -5, 0.5, 0.4);
-  foe.pos.set(-30, fy, -5); foe.vel.set(0, 0, 0);
+  const ks = openSpot(1.5, 1.4) || { x: 0, z: 0 };
+  const fy = g.groundHeight(ks.x, ks.z, 0.5, 0.4);
+  foe.pos.set(ks.x, fy, ks.z); foe.vel.set(0, 0, 0);
   window.__stepN(3, 1 / 60);
   g.applyDamage(foe, 500, g.me, 'TEST', false, new V(0, 0, 1), 'chest');
+  foe.respawnT = 999;                                  // keep the body out of the respawn cycle
+  const livePools = () => E.pools.filter(P => P.live);
+  const at = (P, k) => (P && P.live ? E.pAttr.array[P.i * 3 + k] : 0);
   window.__stepN(Math.round(1.4 * 60), 1 / 60);
-  const pools = live().filter(b => b.grow > 0);
-  const poolUnderBody = pools.some(b => Math.hypot(b.p.x + 30, b.p.z + 5) < 1.8 && normalOf(b).y > 0.8);
-  window.__stepN(Math.round(5.0 * 60), 1 / 60);
-  const poolGone = live().filter(b => b.grow > 0).length === 0;
+  const pool = livePools()[0];
+  const poolUnderBody = !!pool && Math.hypot(pool.x - ks.x, pool.z - ks.z) < 1.8;
+  const front14 = at(pool, 0), bodyAt14 = foe.char.root.visible;
+  window.__stepN(Math.round(2.0 * 60), 1 / 60);        // 3.4 s after the kill
+  const bodyGone = !foe.char.root.visible, poolStays = !!pool && pool.live;
+  window.__stepN(Math.round(4.0 * 60), 1 / 60);        // 7.4 s
+  const front74 = at(pool, 0);
+  window.__stepN(Math.round(12.6 * 60), 1 / 60);       // 20 s
+  const op20 = at(pool, 1);
+  window.__stepN(Math.round(26 * 60), 1 / 60);         // 46 s
+  const poolGone = livePools().length === 0;
 
   /* toggle off: wipes what is there, and a hit leaves nothing */
   E.bloodHit(P, D, false);
@@ -1220,16 +1302,22 @@ export async function testBlood() {
 
   restore();
   g.spawn(foe, false);
+  const reviveSolid = foe.char.root.visible && !foe.char._faded;
   E.clearBlood();
 
   const checks = {
     splatterOnWall: onWall.length > 0,
     dripsOnGround: onGround.length > 0,
-    fullAtThreeSeconds: f30 > 0.8,
-    fadingByFourAndAHalf: f45 > 0 && f45 < 0.5,
-    goneByFive: goneAtFive && f505 === 0,
+    fullAtSixSeconds: f60 > 0.8,
+    fadingByTen: f100 > 0 && f100 < 0.6,
+    goneByTwelve: goneAtTwelve && f1205 === 0,
     poolUnderBody,
-    poolGoneAfterFive: poolGone,
+    poolSpreads: front74 > front14 + 0.2,
+    bodyGoneByThreeAndAHalf: bodyAt14 && bodyGone,
+    poolOutlivesBody: poolStays,
+    poolStillThereAt20s: op20 > 0.9,
+    poolGoneBy46s: poolGone,
+    bodySolidAgainOnRespawn: reviveSolid,
     toggleReachesEffects: effectsFollowsBox,
     toggleOffWipes: beforeOff > 0 && afterOff === 0,
     noBloodWhileOff: hitWhileOff === 0,
@@ -1237,10 +1325,160 @@ export async function testBlood() {
   const failed = Object.keys(checks).filter(k => !checks[k]);
   return {
     name: 'blood', checks, failed,
-    marks: { total: marks.length, wall: onWall.length, ground: onGround.length, pools: pools.length },
-    fade: { at3s: +f30.toFixed(2), at4_5s: +f45.toFixed(2), at5_05s: f505 },
+    marks: { total: marks.length, wall: onWall.length, ground: onGround.length },
+    fade: { at6s: +f60.toFixed(2), at10s: +f100.toFixed(2), at12_05s: f1205 },
+    pool: { front1_4s: +front14.toFixed(2), front7_4s: +front74.toFixed(2), opacity20s: +op20.toFixed(2), reach: pool ? +pool.reach.toFixed(2) : 0 },
     pass: failed.length === 0,
   };
+}
+
+/**
+ * The map-shaped tests on every map: spawn safety, sight against the bullet
+ * raycast, the map walk, the AI, controls, airstrike, melee, blood and
+ * rendered frame time. Each map is deployed fresh before its run.
+ */
+/* ---------------------------------------------------------------------------
+   First person: a punch shows a fist, not the gun; looking down shows your
+   legs (cut at the waist, your own gun hidden) while the shadow keeps the
+   whole body. */
+export async function testFirstPerson() {
+  const g = G(), I = g.input, V = window.__viewmodel, me = g.me, cam = g.camera;
+  await ensureLive();
+  window.__stepN(20, 1 / 60);
+  const saved = g.actors.map(a => a.bot);
+  for (const a of g.actors) a.bot = null;
+  const restore = () => { for (let i = 0; i < g.actors.length; i++) g.actors[i].bot = saved[i]; };
+  const spot = openSpot(3.2, 1.4);
+  if (!spot) { restore(); return { name: 'first-person', pass: false, note: 'no open ground' }; }
+  const Y = g.groundHeight(spot.x, spot.z, 0.5, 0.4);
+  const pose = (pitch) => { me.alive = true; me.health = 100; me.pos.set(spot.x, Y, spot.z); me.vel.set(0, 0, 0); me.yaw = 0; me.pitch = pitch; };
+  const first = (m) => (Array.isArray(m) ? m[0] : m);
+  const nr = window.__noRender; window.__noRender = false;   // the body layers are set in the draw
+  try {
+    /* 1. the punch */
+    pose(0); me.meleeT = 0;
+    for (let f = 0; f < 30; f++) { window.__step(1 / 60); pose(0); }
+    const restY = V.rig.position.y;
+    I.keys.add('KeyV'); I.pressed.add('KeyV');
+    let fistFrames = 0, centred = false, lowest = restY, gunDownWhileFist = true;
+    for (let f = 0; f < 50; f++) {
+      window.__step(1 / 60); if (f === 0) I.keys.delete('KeyV');
+      pose(0);
+      lowest = Math.min(lowest, V.rig.position.y);
+      if (V.fist.visible) {
+        fistFrames++;
+        const p = V.fist.position;
+        if (Math.abs(p.x) < 0.08 && p.z < -0.42) centred = true;
+        if (V.rig.position.y > restY - 0.08 && p.z < -0.35) gunDownWhileFist = false;
+      }
+    }
+    const fistGone = !V.fist.visible;
+    /* 2. the legs */
+    for (let f = 0; f < 4; f++) { window.__step(1 / 60); pose(-1.25); }
+    const legsLayer = cam.layers.isEnabled(6), gunHidden = !cam.layers.isEnabled(4);
+    const tris = (geo) => (geo.index ? geo.index.count : geo.attributes.position.count) / 3;
+    let legs = null, body = null, botsClean = true, weaponOnOwnLayer = !!me.char.weaponModel;
+    me.char.model.traverse(o => { if (o.userData.fpLegs) legs = o; else if (o.isSkinnedMesh && o !== me.char.visorMesh) body = o; });
+    const legsShare = legs && body ? tris(legs.geometry) / tris(body.geometry) : 0;
+    // the whole body still casts the shadow; the legs cut never does (no double shadow)
+    const bodyShadow = !!body && body.castShadow && body.layers.isEnabled(5) && !!legs && !legs.castShadow;
+    const clipped = !!legs && legs.layers.isEnabled(6) && legsShare > 0.15 && legsShare < 0.6;
+    for (const a of g.actors) if (a !== me && a.char) a.char.model.traverse(o => {
+      if (o.userData.fpLegs || (o.isMesh && o.layers.isEnabled(5))) botsClean = false;
+    });
+    if (me.char.weaponModel) me.char.weaponModel.traverse(o => { if (o.isMesh && !o.layers.isEnabled(4)) weaponOnOwnLayer = false; });
+    let upperOff = 0;   // helmet, visor, plate carrier: shadow only
+    me.char.model.traverse(o => { if (o.isMesh && o.layers.isEnabled(5)) upperOff++; });
+    const upperHidden = !cam.layers.isEnabled(5);
+    pose(0);
+    const pass = fistFrames >= 12 && centred && fistGone && gunDownWhileFist && restY - lowest > 0.15 &&
+      legsLayer && gunHidden && upperOff >= 1 && upperHidden && clipped && bodyShadow && botsClean && weaponOnOwnLayer;
+    return { name: 'first-person', pass, fistFrames, centred, fistGone, gunDrop: +(restY - lowest).toFixed(3), gunDownWhileFist,
+      legsLayer, gunHidden, clipped, bodyShadow, botsClean, weaponOnOwnLayer, upperOff, upperHidden, legsShare: +legsShare.toFixed(2) };
+  } finally { window.__noRender = nr; restore(); }
+}
+
+/* ---------------------------------------------------------------------------
+   Skins: five free, ten bought with banked headshot kills. A skin dresses your
+   gun, fist and operator - and nobody else - and every one of them compiles. */
+export async function testSkins() {
+  const g = G(), S = await import('/src/game/skins.js'), V = window.__viewmodel, me = g.me;
+  const KEY = 'obk.profile.v1', backup = localStorage.getItem(KEY);
+  const first = (m) => (Array.isArray(m) ? m[0] : m);
+  const camoOf = (m) => !!(m && m.userData && m.userData.camoUniforms);
+  await ensureLive();
+  try {
+    localStorage.removeItem(KEY);
+    let p = S.loadProfile();
+    const free = S.SKINS.filter(s => S.isUnlocked(p, s.id)).length, paid = S.SKINS.filter(s => s.cost > 0).length;
+    const tooPoor = S.unlockSkin(p, 'tiger');                   // costs 1, the bank is empty
+    /* the real kill path banks a headshot kill, and only a headshot kill */
+    const foes = g.actors.filter(a => a.team !== me.team && a.alive);
+    const b0 = S.loadProfile().headshots;
+    g.killActor(foes[0], me, 'TEST', false);
+    const afterBody = S.loadProfile().headshots;
+    g.killActor(foes[1], me, 'TEST', true);
+    const afterHead = S.loadProfile().headshots;
+    p = S.loadProfile();
+    const bought = S.unlockSkin(p, 'tiger');
+    const short = S.unlockSkin(p, 'gold');
+    const equipped = S.equipSkin(p, 'tiger') && S.loadProfile().skin === 'tiger';
+    const lockedEquip = S.equipSkin(S.loadProfile(), 'gold');
+    /* dressing */
+    const skin = S.SKIN_BY_ID.tiger;
+    V.setSkin(skin); S.skinOperator(me.char, skin);
+    const parts = {};
+    V.weapon.traverse(o => { if (o.isMesh) parts[o.name] = camoOf(first(o.material)); });
+    const gunOk = parts.poly === true && parts.steel === false && parts.lens === false;
+    const sleeveOk = camoOf(V.fistSleeve.material);
+    let suitOk = false, legsWear = false, botsClean = true, tpGun = false;
+    me.char.model.traverse(o => {
+      if (!o.isSkinnedMesh || /visor/i.test(o.name)) return;
+      const m = first(o.material);
+      if (camoOf(m)) suitOk = true;
+      if (o.userData.fpLegs && camoOf(m)) legsWear = true;   // the first-person legs wear it too
+    });
+    for (const a of g.actors) if (a !== me && a.char) a.char.model.traverse(o => { if (o.isMesh && camoOf(first(o.material))) botsClean = false; });
+    if (me.char.weaponModel) me.char.weaponModel.traverse(o => { if (o.isMesh && o.name === 'poly') tpGun = camoOf(first(o.material)); });
+    /* every skin compiles: draw a frame in each */
+    const nr = window.__noRender; window.__noRender = false;
+    const bad = new Set();
+    for (const s of S.SKINS) {
+      V.setSkin(s); S.skinOperator(me.char, s); window.__step(1 / 60);
+      for (const pr of window.__renderer.info.programs || []) if (pr.diagnostics && !pr.diagnostics.runnable) bad.add(s.id);
+    }
+    window.__noRender = nr;
+    const pass = free === 5 && paid === 10 && !tooPoor.ok && afterBody === b0 && afterHead === b0 + 1 && bought.ok &&
+      !short.ok && equipped && !lockedEquip && gunOk && sleeveOk && suitOk && legsWear && botsClean && tpGun && !bad.size;
+    return { name: 'skins', pass, free, paid, tooPoor: tooPoor.reason, bankBody: afterBody - b0, bankHead: afterHead - b0,
+      bought: bought.reason, short: short.reason, equipped, lockedEquip, gunParts: parts, sleeveOk, suitOk, legsWear,
+      botsClean, tpGun, shaderErrors: [...bad] };
+  } finally {
+    if (backup === null) localStorage.removeItem(KEY); else localStorage.setItem(KEY, backup);
+    const s = S.currentSkin(); V.setSkin(s); S.skinOperator(me.char, s);
+  }
+}
+
+export async function runMaps(ids = MAP_ORDER) {
+  const out = {};
+  for (const id of ids) {
+    const g = G();
+    g.menu.selectMap(id);
+    g.deploy();
+    await ensureLive();
+    window.__stepN(30, 1 / 60);
+    const r = [];
+    const run = async (f, ...a) => {
+      try { r.push(await f(...a)); } catch (e) { r.push({ name: f.name, pass: false, error: String(e && e.stack || e) }); }
+    };
+    await run(testSpawns); await run(testWallPenetrationHonesty); await run(testMapWalk); await run(testAI);
+    await run(testControls); await run(testTeamAirstrike); await run(testMelee); await run(testBlood);
+    await ensureLive();
+    await run(testPerformance, 240);
+    out[id] = { map: g.map.id, pass: r.every(x => x.pass), failed: r.filter(x => !x.pass).map(x => x.name), results: r };
+  }
+  window.__mapResults = out;
+  return out;
 }
 
 export async function runAll(opts = {}) {
@@ -1262,6 +1500,8 @@ export async function runAll(opts = {}) {
   push(await testTeamAirstrike());
   push(await testMelee());
   push(await testBlood());
+  push(await testFirstPerson());
+  push(await testSkins());
   await ensureLive();
   push(testPerformance(opts.perfFrames ?? 320));
   window.__qaResults = out;

@@ -355,13 +355,6 @@ input[type=range]::-moz-range-thumb{width:13px;height:13px;background:var(--acc)
 .kc-skip{font-size:11px;letter-spacing:.2em;color:var(--ink-dim);margin-top:7px}
 .kc-skip b{font-family:var(--f-mono);color:var(--acc);font-size:14px}
 
-#gunnerHud{position:absolute;inset:0}
-#gunnerSvg{width:100%;height:100%}
-.gg-top{position:absolute;top:5%;left:50%;transform:translateX(-50%);font-size:13px;letter-spacing:.4em;
-  color:#8effa6;text-shadow:0 0 14px rgba(126,231,135,.6)}
-.gg-bottom{position:absolute;bottom:6%;left:50%;transform:translateX(-50%);font-family:var(--f-mono);
-  font-size:15px;letter-spacing:.22em;color:#8effa6}
-
 #strikeSel{position:absolute;inset:0;background:rgba(4,7,6,.82);display:flex;flex-direction:column;
   align-items:center;justify-content:center;gap:14px;pointer-events:auto;cursor:crosshair}
 #strikeCv{border:1px solid var(--line-str);max-width:78vw;max-height:70vh}
@@ -441,3 +434,48 @@ input[type=range]::-moz-range-thumb{width:13px;height:13px;background:var(--acc)
   color: var(--acc);
   border-color: rgba(126,231,135,.45);
 }
+
+/* ---- map picker (briefing) ---- */
+.map-sel{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;padding:10px 15px 2px}
+.map-b{background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.07);color:var(--ink-dim);
+  padding:8px 10px 9px;text-align:left;cursor:pointer;display:flex;flex-direction:column;gap:3px;font-family:inherit}
+.map-b .sw{height:3px;border-radius:2px;margin-bottom:4px;opacity:.9}
+.map-b b{font-size:11.5px;letter-spacing:.2em;color:var(--ink)}
+.map-b i{font-style:normal;font-size:10px;line-height:1.35;color:var(--ink-faint)}
+.map-b:hover{border-color:var(--line-str);background:rgba(126,231,135,.05)}
+.map-b.active{border-color:var(--acc);background:rgba(126,231,135,.11)}
+.map-b.active b{color:var(--acc)}
+
+/* --- skins --- */
+.skin-grid-panel{min-height:0;display:flex;flex-direction:column}
+.skin-grid{overflow-y:auto;display:grid;grid-template-columns:repeat(3,1fr);gap:9px;padding:12px;align-content:start;flex:1;min-height:0}
+.skcard{background:rgba(255,255,255,.022);border:1px solid rgba(255,255,255,.07);padding:7px 8px 8px;
+  cursor:pointer;transition:.14s;display:flex;flex-direction:column;gap:5px;position:relative}
+.skcard:hover{border-color:var(--line-str);background:rgba(126,231,135,.045)}
+.skcard.active{border-color:var(--acc);background:rgba(126,231,135,.1);box-shadow:inset 0 0 22px rgba(126,231,135,.07)}
+.skcard.active .gc-name{color:var(--acc)}
+.skcard canvas{width:100%;height:46px;display:block;border:1px solid rgba(0,0,0,.35)}
+.skcard.locked canvas{filter:grayscale(.55) brightness(.62)}
+.skcard .gc-name{font-size:11px}
+.sk-tag{font-family:var(--f-mono);font-size:9px;letter-spacing:.12em;color:var(--ink-faint)}
+.sk-tag.eq{color:var(--acc)}
+.sk-tag.cost{color:#f0c060}
+.hs-bank{color:#f0c060;border-color:rgba(240,192,96,.45)}
+.sk-hint{padding:9px 15px 13px;font-size:10.5px;line-height:1.5;color:var(--ink-faint);border-top:1px solid rgba(255,255,255,.06)}
+.sk-hint b{color:#f0c060;font-weight:500}
+.skin-detail-panel{min-height:0;overflow-y:auto}
+#skinRender{width:100%;height:auto;display:block;background:
+  radial-gradient(ellipse at 50% 60%,rgba(240,192,96,.06),transparent 62%)}
+.sk-desc{padding:4px 15px 10px;font-size:12px;line-height:1.5;color:var(--ink-dim)}
+.sk-actions{display:flex;align-items:center;gap:14px;padding:4px 15px 16px}
+.sk-btn{font:inherit;font-size:11.5px;letter-spacing:.2em;padding:10px 20px;cursor:pointer;color:#0b0f0c;
+  background:var(--acc);border:1px solid var(--acc);transition:.14s}
+.sk-btn:hover:not(:disabled){box-shadow:0 0 14px rgba(126,231,135,.5)}
+.sk-btn:disabled{cursor:default;background:transparent;color:var(--ink-faint);border-color:rgba(255,255,255,.12)}
+.sk-note{font-family:var(--f-mono);font-size:10px;letter-spacing:.08em;color:#f0c060}
+.sk-hand{display:flex;align-items:center;gap:14px;padding:2px 15px 16px}
+.sk-hand-k{font-size:10.5px;letter-spacing:.18em;color:var(--ink-dim)}
+.sk-tones{display:flex;gap:8px}
+.sk-tone{width:22px;height:22px;border-radius:50%;border:2px solid rgba(255,255,255,.16);cursor:pointer;padding:0;transition:.14s}
+.sk-tone:hover{border-color:var(--line-str)}
+.sk-tone.active{border-color:var(--acc);box-shadow:0 0 9px rgba(126,231,135,.55)}

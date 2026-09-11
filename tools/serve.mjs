@@ -33,7 +33,11 @@ http.createServer((req, res) => {
         const b64 = comma >= 0 ? body.slice(comma + 1) : body;
         const dir = path.join(ROOT, 'qa');
         fs.mkdirSync(dir, { recursive: true });
-        const file = path.join(dir, name.endsWith('.png') ? name : name + '.png');
+        // screenshots are JPEG (a 1080p PNG is 2-4 MB and the repo went past
+        // GitHub's upload limit); a PNG data URL is still saved as .png
+        const ext = body.startsWith('data:image/jpeg') ? '.jpg' : '.png';
+        const stem = name.endsWith('.png') || name.endsWith('.jpg') ? name.slice(0, -4) : name;
+        const file = path.join(dir, stem + ext);
         fs.writeFileSync(file, Buffer.from(b64, 'base64'));
         res.writeHead(200, { 'Content-Type': 'text/plain' }).end(String(fs.statSync(file).size));
       } catch (e) {

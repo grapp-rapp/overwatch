@@ -6,6 +6,7 @@
    intent comes from the mouse and theirs comes from Bot.think(). That symmetry
    is what makes the killcam honest — it is replaying the same simulation.
    ========================================================================== */
+import { awardHeadshot, loadProfile } from './skins.js';
 import * as THREE from 'three';
 import { Character } from '../chars/characters.js';
 import { WeaponState, resolveShot, explode, underOpenSky } from '../weapons/combat.js';
@@ -61,7 +62,6 @@ class Actor {
     this.bot = null;
     this.streakEarned = new Set();
     this.pendingStreak = null;
-    this.inGunner = false;
   }
   get weapon() { return this.weapons ? this.weapons[this.slot] : null; }
   get height() { return lerp(HEIGHT_STAND, HEIGHT_CROUCH, this.crouch); }
@@ -106,7 +106,6 @@ export class Game {
     this.respawnDelay = 0;
     this.strikeMode = null;
     this.strikeCursor = { x: 0, z: 0, heading: 0 };
-    this.gunnerAct = null;
     this.fpsAcc = 0; this.fpsFrames = 0; this.fpsText = '';
     this.showFps = true;
     this.frameStats = [];
@@ -120,18 +119,21 @@ export class Game {
   /** Run fn after `delay` seconds of match time. */
   after(delay, fn) { this.timers.push({ t: delay, fn }); }
 
+  /** Point everything at another map. Only ever called between matches. */
+  setMap(map) {
+    this.map = map;
+    this.world.map = map;
+    this.hotspots = this._buildHotspots();
+  }
+
   _buildHotspots() {
     const pts = [];
     const add = (x, z, w) => { const c = this.map.navIndex(x, z);
       pts.push({ x, y: this.map.navN[c] ? this.map.navH[c * this.map.MAXS] : 0, z, weight: w || 0 }); };
-    add(0, 0, 3); add(-8, -3, 1); add(8, 3, 1);
-    add(-20, -11, 2); add(20, 11, 2);
-    add(-21, -7, 1); add(21, 7, 1);
-    add(-3.5, -16.5, 2); add(3.5, 16.5, 2);
-    add(-16, 9.5, 1); add(16, -9.5, 1);
-    add(-27, 3, 0); add(27, -3, 0);
-    add(-13, 15.5, 0); add(13, -15.5, 0);
-    add(-11, -8.5, 1); add(11, 8.5, 1);
+    /* each map names the places worth patrolling; one with none still gives
+       the AI somewhere to go */
+    for (const [x, z, w] of this.map.hotspots || []) add(x, z, w);
+    if (!pts.length) add(0, 0, 1);
     return pts;
   }
 
@@ -152,7 +154,7 @@ export class Game {
 
     /* --- local player --- */
     const me = new Actor({ idx: 0, name: 'YOU', team: 'A', isLocal: true });
-    me.char = new Character({ team: 'A', variant: 0, seed: 1, isLocal: true, layer: PLAYER_LAYER, name: 'you' });
+    me.char = new Character({ team: 'A', variant: 0, seed: 1, isLocal: true, layer: PLAYER_LAYER, weaponLayer: PLAYER_LAYER + 1, name: 'you' });
     this.scene.add(me.char.root);
     this._equip(me, cfg.primary, cfg.secondary, cfg.lethal);
     this.actors.push(me);
@@ -179,13 +181,20 @@ export class Game {
     for (let i = 0; i < cfg.friends; i++) mkBot('A');
     for (let i = 0; i < cfg.enemies; i++) mkBot('B');
 
-    /* --- spawn everyone --- */
+    /* --- spawn everyone ---
+       A new Actor starts "alive" at the origin. Placing them one at a time, the
+       first ones were scored against enemies still standing at the centre of
+       the map: wherever a spawn could see the centre it read as "enemy in
+       view", and on Timberline, whose road runs straight to it, a bot fled to
+       the other team's spawn. Nobody counts until they have been placed. */
+    this.bankedThisMatch = 0;
+    for (const a of this.actors) a.alive = false;
     for (const a of this.actors) this.spawn(a, true);
 
     this.state = STATE.LIVE;
     this.hud.show(true);
     this.hud.setWeapon(me.weapon.def, LETHALS[cfg.lethal].name, me.lethalCount);
-    this.hud.banner('OPERATION DUSTLINE', 'TEAM DEATHMATCH · ' + cfg.scoreLimit, false);
+    this.hud.banner('OPERATION ' + this.map.name, 'TEAM DEATHMATCH · ' + cfg.scoreLimit, false);
     this.ambienceLoop = this.ambienceLoop || this.audio.startLoop('ambience', { vol: 0.35 });
   }
 
@@ -295,7 +304,7 @@ export class Game {
       this.hud.setKillcamCount(this.killcamT);
       const done = this.killcam.update(dt);
       if (done || this.killcamT <= 0 || this.input.hit('jump')) this.endKillcam();
-    } else if (this.state === STATE.LIVE && !this.me.inGunner) {
+    } else if (this.state === STATE.LIVE) {
       this.updateCamera(dt);
     }
 
@@ -323,7 +332,7 @@ export class Game {
     if (a.isLocal) {
       // Keyboard play still works where pointer lock is refused; only mouse look is lost.
       const canPlay = this.input.locked || this.input.lockUnavailable;
-      if (this.state === STATE.LIVE && canPlay && !a.inGunner) {
+      if (this.state === STATE.LIVE && canPlay) {
         const I = this.input;
         const f = (I.down('forward') ? 1 : 0) - (I.down('back') ? 1 : 0);
         const r = (I.down('right') ? 1 : 0) - (I.down('left') ? 1 : 0);
@@ -592,7 +601,7 @@ export class Game {
     this._eye.set(a.pos.x, a.pos.y + a.eyeY, a.pos.z);
 
     /* muzzle for visuals */
-    if (a.isLocal && !a.inGunner) {
+    if (a.isLocal) {
       this.viewmodel.muzzleWorld(this.camera, this._muz);
     } else if (a.char && a.char.muzzle) {
       a.char.getMuzzleWorld(this._muz);
@@ -615,7 +624,7 @@ export class Game {
     }
 
     /* muzzle flash + shell */
-    if (a.isLocal && !a.inGunner) {
+    if (a.isLocal) {
       this.viewmodel.onFire(def.recoil.visual);   // owns its own flash, in vm space
       this.camShake = Math.min(0.9, this.camShake + def.recoil.visual * 0.10);
       const ej = this.viewmodel.ejectWorld(this.camera, this._v2);
@@ -638,7 +647,7 @@ export class Game {
     }
 
     /* audio */
-    this.audio.gunshot(def.id, [this._muz.x, this._muz.y, this._muz.z], this.camera.position, a.isLocal && !a.inGunner);
+    this.audio.gunshot(def.id, [this._muz.x, this._muz.y, this._muz.z], this.camera.position, a.isLocal);
     this.recorder.addEvent('shot', a.idx, this._muz.x, this._muz.y, this._muz.z,
       this._dir.x, this._dir.y, this._dir.z, def.id);
 
@@ -682,10 +691,6 @@ export class Game {
   /* ---------------------------------------------------------------- damage */
   applyDamage(target, dmg, attacker, weaponName, headshot, dir, zone) {
     if (!target.alive) return false;
-    /* While you are on the chopper's minigun your body is not on the map. Leaving
-       it shootable meant you could be killed mid-streak and end up with the
-       killcam and the gunner reticle drawn on top of each other. */
-    if (target.inGunner) return false;
     target.health -= dmg;
     target.lastDamage = this.time;
     target.lastAttacker = attacker;
@@ -713,15 +718,19 @@ export class Game {
     victim.streak = 0;
     victim.respawnT = victim.isLocal ? 99 : this.rng.range(3.0, 5.5);
     if (victim.char) victim.char.kill(dir || this._v.set(0, 0, 1), headshot);
-    /* once the body has come to rest, blood pools out from under the hips */
+    /* as the body comes to rest, blood starts to run out from under it: from
+       the hips, and from the head as well on a headshot. The body itself is
+       gone about three seconds after death (Character._updateDeath). */
     if (victim.char) {
       const c = victim.char;
-      this.after(1.0, () => {
+      this.after(0.85, () => {
         if (victim.alive || !this.effects) return;
         const p = this._poolP || (this._poolP = new THREE.Vector3());
         const hips = c.bone && c.bone('Hips');
         if (hips) hips.getWorldPosition(p); else p.copy(victim.pos);
-        this.effects.bloodPool(p);
+        this.effects.bloodPool(p, 1);
+        const head = headshot && c.bone && c.bone('Head');
+        if (head) { head.getWorldPosition(p); this.effects.bloodPool(p, 0.55); }
       });
     }
     this.audio.play('death', { pos: [victim.pos.x, victim.pos.y + 1, victim.pos.z], vol: 0.5 });
@@ -744,7 +753,12 @@ export class Game {
       this.hud.banner('YOU WERE KILLED BY', killer ? killer.name : 'THE WORLD', true);
       this.startKillcam(killer, weaponName);
     } else if (killer === this.me) {
-      this.hud.banner(headshot ? 'HEADSHOT' : 'ELIMINATED', victim.name, false);
+      // every headshot kill banks one headshot: the currency skins are bought with
+      if (headshot) {
+        const bank = awardHeadshot();
+        this.bankedThisMatch = (this.bankedThisMatch || 0) + 1;
+        this.hud.banner('HEADSHOT', victim.name + '  ·  +1 BANKED (' + bank + ')', false);
+      } else this.hud.banner('ELIMINATED', victim.name, false);
     }
 
     if (this.scoreA >= this.scoreLimit || this.scoreB >= this.scoreLimit) this.endMatch();
@@ -785,10 +799,9 @@ export class Game {
     this.killcamT = 5.0;
     this.hud.showKillcam(killer.name, weaponName);
     this.viewmodel.hidden = true;
-    // the killcam takes the whole screen — no scope ring, no gunner reticle,
-    // no strike selector left drawn underneath it
+    // the killcam takes the whole screen: no scope ring and no strike
+    // selector left drawn underneath it
     this.hud.setScope(false);
-    this.hud.setGunner(false);
     this.hud.showScoreboard(false);
     if (this.strikeMode) this.closeStrikeSelect();
   }
@@ -987,7 +1000,7 @@ export class Game {
     const M = this.map;
     let best = null, bestScore = -Infinity;
     for (const o of this.actors) {
-      if (o === a || !o.alive || o.team === a.team || o.inGunner) continue;
+      if (o === a || !o.alive || o.team === a.team) continue;
       if (Math.hypot(o.pos.x - eye.x, o.pos.z - eye.z) > REACH + 0.5) continue;
       for (const [zone, h] of MELEE_POINTS) {
         const y = o.pos.y + h * (1 - (o.crouch || 0) * 0.32);
@@ -1121,28 +1134,6 @@ export class Game {
     return clamp((a.vel.z * sy - a.vel.x * cy) / 4.0, -1, 1);
   }
 
-  /* ---------------------------------------------------------------- gunner */
-  enterGunner(act) {
-    this.gunnerAct = act;
-    this.me.inGunner = true;
-    this.me.alive = true;
-    this.me.health = this.me.maxHealth;
-    if (this.me.char) this.me.char.root.visible = false;
-    this.viewmodel.hidden = true;
-    this.hud.setGunner(true);
-    this.hud.setScope(false);
-  }
-  exitGunner(act) {
-    if (this.gunnerAct !== act) return;
-    this.hud.setGunner(false);
-    this.gunnerAct = null;
-    this.me.inGunner = false;
-    if (this.me.char) this.me.char.root.visible = true;
-    this.viewmodel.hidden = false;
-    this.hud.setGunner(false);
-    this.spawn(this.me);
-  }
-
   /* ---------------------------------------------------------------- strike */
   /* ------------------------------------------------------- team airstrike */
 
@@ -1217,8 +1208,8 @@ export class Game {
   updateStrikeSelect(dt) {
     if (!this.strikeMode) return;
     const I = this.input;
-    this.strikeCursor.x = clamp(this.strikeCursor.x + I.mouse.dx * 0.055, -30, 30);
-    this.strikeCursor.z = clamp(this.strikeCursor.z + I.mouse.dy * 0.055, -22, 22);
+    this.strikeCursor.x = clamp(this.strikeCursor.x + I.mouse.dx * 0.055, 1 - this.map.halfW, this.map.halfW - 1);
+    this.strikeCursor.z = clamp(this.strikeCursor.z + I.mouse.dy * 0.055, 1 - this.map.halfD, this.map.halfD - 1);
     this.strikeCursor.heading += I.mouse.wheel * 0.24;
     this.drawStrikeMap();
     if (I.mouse.leftPressed) {
@@ -1237,12 +1228,13 @@ export class Game {
   drawStrikeMap() {
     const cv = document.getElementById('strikeCv'), c = cv.getContext('2d');
     const W = cv.width, H = cv.height, pad = 20;
-    const s = Math.min((W - pad * 2) / 62, (H - pad * 2) / 46);
+    const s = Math.min((W - pad * 2) / this.map.W, (H - pad * 2) / this.map.D);
     const X = (x) => W / 2 + x * s, Z = (z) => H / 2 + z * s;
     c.fillStyle = '#08100c'; c.fillRect(0, 0, W, H);
     for (const b of this.map.boxes) {
-      if (!b.solid || !b.vis || b.y1 - b.y0 < 0.6 || b.y0 > 4.5) continue;
-      if (Math.abs(b.x0) > 33 || Math.abs(b.z0) > 25) continue;
+      if (!b.solid || b.y1 - b.y0 < 0.6 || b.y0 > 4.5) continue;
+      if (!b.vis && !((b.mat === 'rock' || b.mat === 'bark') && b.y1 - b.y0 < 2.5)) continue;
+      if (Math.abs(b.x0) > this.map.halfW + 2 || Math.abs(b.z0) > this.map.halfD + 2) continue;
       c.fillStyle = (b.y1 - b.y0) > 2.6 ? 'rgba(70,88,94,0.9)' : 'rgba(80,100,84,0.7)';
       c.fillRect(X(b.x0), Z(b.z0), (b.x1 - b.x0) * s, (b.z1 - b.z0) * s);
     }
@@ -1305,7 +1297,7 @@ export class Game {
         if (h && this.map.lineOfSight(this._eye.x, this._eye.y, this._eye.z, h.px, h.py, h.pz)) { onEnemy = true; break; }
       }
     }
-    this.hud.updateReticle(gap, a.adsW, this.state === STATE.LIVE && a.alive && !a.inGunner, onEnemy);
+    this.hud.updateReticle(gap, a.adsW, this.state === STATE.LIVE && a.alive, onEnemy);
 
     this.hud.update(dt, {
       pos: a.pos, yaw: a.yaw, team: a.team, self: a, actors: this.actors,
@@ -1341,6 +1333,7 @@ export class Game {
       ['K/D', me.deaths ? (me.kills / me.deaths).toFixed(2) : me.kills.toFixed(2)],
       ['ACCURACY', acc.toFixed(0) + '%'], ['HEADSHOTS', me.headshots],
       ['BEST STREAK', me.bestStreak], ['DAMAGE', Math.round(me.damageDealt)],
+      ['HEADSHOT BANK', '+' + (this.bankedThisMatch || 0) + ' → ' + loadProfile().headshots],
     ].map(([k, v]) => `<div><div class="rv">${v}</div><div class="rk">${k}</div></div>`).join('');
     el.classList.remove('hidden');
     if (this.ambienceLoop) { this.audio.stopLoop(this.ambienceLoop); this.ambienceLoop = null; }

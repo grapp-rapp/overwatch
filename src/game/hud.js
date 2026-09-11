@@ -11,7 +11,6 @@
    ========================================================================== */
 import { clamp, lerp, fmtTime, wrapPi } from '../core/util.js';
 import { STREAKS, STREAK_ICONS, TEAM_STRIKE } from './killstreaks.js';
-import { MAP_W, MAP_D, HALF_W, HALF_D } from '../world/map.js';
 
 const $ = (id) => document.getElementById(id);
 const SVGNS = 'http://www.w3.org/2000/svg';
@@ -30,7 +29,6 @@ export class HUD {
       scope: $('scope'), scopeSvg: $('scopeSvg'), banner: $('banner'), toast: $('streakToast'),
       scoreboard: $('scoreboard'), killcam: $('killcam'), kcKiller: $('kcKiller'),
       kcWep: $('kcWep'), kcCount: $('kcCount'), fps: $('fps'),
-      gunnerHud: $('gunnerHud'), gunnerSvg: $('gunnerSvg'), ggTime: $('ggTime'),
       strikeSel: $('strikeSel'), strikeCv: $('strikeCv'), ssTitle: $('ssTitle'),
     };
     this.mm = this.el.minimap.getContext('2d');
@@ -43,7 +41,6 @@ export class HUD {
     this.kf = [];
     this._buildStreakRail();
     this._buildScope();
-    this._buildGunner();
     this._reticleKind = null;
     this.mmZoom = 3.1;
   }
@@ -141,22 +138,6 @@ export class HUD {
       }
     }
     this.scopeBreath = s.querySelector('#scopeBreath');
-  }
-
-  _buildGunner() {
-    this.el.gunnerSvg.innerHTML = `
-      <rect width="1000" height="1000" fill="#04120a" opacity="0.30"/>
-      <g stroke="#8effa6" stroke-width="2" fill="none" opacity="0.9">
-        <circle cx="500" cy="500" r="118"/>
-        <line x1="500" y1="330" x2="500" y2="440"/><line x1="500" y1="560" x2="500" y2="670"/>
-        <line x1="330" y1="500" x2="440" y2="500"/><line x1="560" y1="500" x2="670" y2="500"/>
-        <path d="M300 300 L300 350 M300 300 L350 300 M700 300 L700 350 M700 300 L650 300
-                 M300 700 L300 650 M300 700 L350 700 M700 700 L700 650 M700 700 L650 700"/>
-      </g>
-      <circle cx="500" cy="500" r="3" fill="#8effa6"/>
-      <g opacity="0.5" stroke="#8effa6" stroke-width="1">
-        ${Array.from({ length: 24 }, (_, i) => `<line x1="0" y1="${i * 42}" x2="1000" y2="${i * 42}"/>`).join('')}
-      </g>`;
   }
 
   /* ---------------------------------------------------------------- reticle */
@@ -331,8 +312,6 @@ export class HUD {
     this.el.scope.classList.toggle('hidden', !on);
     if (this.scopeBreath) this.scopeBreath.setAttribute('opacity', breathHeld ? '1' : '0');
   }
-  setGunner(on) { this.el.gunnerHud.classList.toggle('hidden', !on); }
-  setGunnerTime(t) { this.set('ggTime', Math.ceil(t)); }
 
   /* ---------------------------------------------------------------- killcam */
   showKillcam(killerName, weaponName) {
@@ -427,20 +406,28 @@ export class HUD {
 
     /* map footprint */
     c.fillStyle = 'rgba(20,30,26,0.55)';
-    c.fillRect(-HALF_W * zoom, -HALF_D * zoom, MAP_W * zoom, MAP_D * zoom);
+    const M = this.g.map;
+    c.fillRect(-M.halfW * zoom, -M.halfD * zoom, M.W * zoom, M.D * zoom);
 
     /* structures */
     const boxes = this.g.map.boxes;
     c.lineWidth = 1;
     for (let i = 0; i < boxes.length; i++) {
       const b = boxes[i];
-      if (!b.solid || !b.vis) continue;
+      if (!b.solid || (!b.vis && !((b.mat === 'rock' || b.mat === 'bark') && b.y1 - b.y0 < 2.5))) continue;
       const h = b.y1 - b.y0;
       if (h < 0.55) continue;
       if (b.y0 > 4.2) continue;
       if (b.x1 - b.x0 > 40 || b.z1 - b.z0 > 40) continue;
       c.fillStyle = h > 2.6 ? 'rgba(120,150,138,0.42)' : 'rgba(96,124,112,0.30)';
       c.fillRect(b.x0 * zoom, b.z0 * zoom, (b.x1 - b.x0) * zoom, (b.z1 - b.z0) * zoom);
+    }
+
+    /* tree crowns */
+    c.fillStyle = 'rgba(52,96,64,0.38)';
+    for (const it of this.g.map.insts || []) {
+      if (it.kind !== 'pine' && it.kind !== 'oak') continue;
+      c.beginPath(); c.arc(it.x * zoom, it.z * zoom, 1.3 * it.sx * zoom, 0, 6.283); c.fill();
     }
 
     /* actors */
@@ -546,6 +533,5 @@ export class HUD {
     this.el.hurtVig.style.opacity = 0;
     this.hideKillcam();
     this.setScope(false);
-    this.setGunner(false);
   }
 }

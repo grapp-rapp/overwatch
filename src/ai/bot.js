@@ -121,7 +121,6 @@ export class Bot {
     let best = null, bestScore = -Infinity;
     for (const o of this.w.actors) {
       if (o === this.a || !o.alive || o.team === this.a.team) continue;
-      if (o.inGunner) continue;      // riding the gunship, not on the ground
       if (!this.canSee(o)) continue;
       const d = Math.hypot(o.pos.x - this.a.pos.x, o.pos.z - this.a.pos.z);
       let sc = 100 - d;

@@ -3,7 +3,6 @@
 
      3  UAV                 sweeps a radar pulse; enemies show on the minimap
      7  ATTACK HELICOPTER   an AI gunship orbits and engages hostiles
-    11  CHOPPER GUNNER      you take the minigun; thermal optics, 40 seconds
 
    The airstrike is deliberately not on that ladder. Each side gets exactly one
    for the whole match: you paint a line on the tac-map, two jets run it, and it
@@ -26,8 +25,6 @@ export const STREAKS = [
     desc: 'Reveals hostiles on the minimap', icon: 'uav' },
   { id: 'heli',    name: 'ATTACK HELICOPTER',   cost: 7,  key: '7', dur: 42,
     desc: 'Gunship orbits and engages', icon: 'heli' },
-  { id: 'gunner',  name: 'CHOPPER GUNNER',      cost: 11, key: '7', dur: 40,
-    desc: 'You take the minigun', icon: 'gunner' },
 ];
 
 /* The airstrike is not a killstreak. Each side gets exactly one for the whole
@@ -43,7 +40,6 @@ export const STREAK_ICONS = {
   jet:    'M2 13l10-9 10 9-10 3z M9 16h6l-3 5z',
   heli:   'M3 7h18M12 7v3M6 10h12v5H6z M15 15l6 2M9 19h6',
   bomb:   'M12 3v6M8 9h8l-2 11h-4z M5 6l2 2M19 6l-2 2',
-  gunner: 'M4 9h12v5H4z M16 10h5M6 14v4M13 14v4M3 6h6',
 };
 
 /* ============================================================================
@@ -210,8 +206,7 @@ export class Killstreaks {
     if (!def) return false;
     switch (id) {
       case 'uav': this._uav(owner); break;
-      case 'heli': this._heli(owner, false); break;
-      case 'gunner': this._heli(owner, true); break;
+      case 'heli': this._heli(owner); break;
     }
     return true;
   }
@@ -274,12 +269,12 @@ export class Killstreaks {
     }
   }
 
-  _heli(owner, gunner) {
+  _heli(owner) {
     const h = buildHelicopter();
     const a = {
-      kind: gunner ? 'gunner' : 'heli', obj: h, t: 0, dur: gunner ? 40 : 42, owner,
-      angle: rng() * 6.28, radius: gunner ? 46 : 40, alt: gunner ? 34 : 27,
-      fireTimer: 0, target: null, targetT: 0, gunnerYaw: 0, gunnerPitch: -0.5,
+      kind: 'heli', obj: h, t: 0, dur: 42, owner,
+      angle: rng() * 6.28, radius: 40, alt: 27,
+      fireTimer: 0, target: null, targetT: 0,
       spin: 0, ammoHeat: 0,
       weapon: { def: { ...WEAPONS.hammer, id: 'hammer', rpm: 900, pellets: 1,
         damage: { near: 42, far: 34, nearRange: 60, farRange: 120 },
@@ -288,13 +283,8 @@ export class Killstreaks {
     this.g.scene.add(h);
     this.active.push(a);
     a.rotorSfx = this.g.audio.startLoop('rotor', { vol: 0.0, pos: [0, 30, 0], reverb: 0.4 });
-    if (gunner) {
-      this.g.enterGunner(a);
-      this.g.hud.banner('CHOPPER GUNNER', 'YOU HAVE THE GUN', false);
-    } else {
-      this.g.hud.banner(owner.team === this.g.playerTeam ? 'ATTACK HELICOPTER' : 'ENEMY HELICOPTER',
-        owner.team === this.g.playerTeam ? 'SUPPORT ON STATION' : 'HOSTILE AIR', owner.team !== this.g.playerTeam);
-    }
+    this.g.hud.banner(owner.team === this.g.playerTeam ? 'ATTACK HELICOPTER' : 'ENEMY HELICOPTER',
+      owner.team === this.g.playerTeam ? 'SUPPORT ON STATION' : 'HOSTILE AIR', owner.team !== this.g.playerTeam);
     this.g.audio.play('streak', { vol: 0.7 });
   }
 
@@ -341,7 +331,7 @@ export class Killstreaks {
 
       /* ---- helicopters ---- */
       const alive = a.t < a.dur;
-      a.angle += dt * (a.kind === 'gunner' ? 0.16 : 0.21);
+      a.angle += dt * 0.21;
       const px = Math.cos(a.angle) * a.radius, pz = Math.sin(a.angle) * a.radius;
       const arrive = clamp(a.t / 4, 0, 1), leave = clamp((a.dur - a.t) / 4, 0, 1);
       const alt = a.alt + (1 - Math.min(arrive, leave)) * 26;
@@ -363,15 +353,10 @@ export class Killstreaks {
         a.rotorSfx.gain.gain.setTargetAtTime(target, g.audio.ctx.currentTime, 0.3);
       }
 
-      if (a.kind === 'gunner') {
-        this._updateGunner(a, dt);
-      } else {
-        this._updateHeliAI(a, dt);
-      }
+      this._updateHeliAI(a, dt);
 
       if (!alive) {
         if (a.rotorSfx) g.audio.stopLoop(a.rotorSfx);
-        if (a.kind === 'gunner') g.exitGunner(a);
         g.scene.remove(a.obj);
         this.active.splice(i, 1);
       }
@@ -433,50 +418,5 @@ export class Killstreaks {
       if (h.target) g.applyDamage(h.target, h.damage, a.owner, 'HELI', h.headshot,
         new THREE.Vector3(h.dirX, h.dirY, h.dirZ), h.zone);
     }
-  }
-
-  /** Player-controlled minigun. */
-  _updateGunner(a, dt) {
-    const g = this.g;
-    const inp = g.input;
-    a.gunnerYaw -= inp.mouse.dx * 0.0016 * inp.sensitivity;
-    a.gunnerPitch -= inp.mouse.dy * 0.0016 * inp.sensitivity * (inp.invert ? -1 : 1);
-    a.gunnerPitch = clamp(a.gunnerPitch, -1.35, 0.10);
-    const turret = a.obj.userData.turret;
-    turret.rotation.y = damp(turret.rotation.y, 0, 1, dt);
-    a.fireTimer -= dt;
-    if (inp.mouse.left && a.fireTimer <= 0) {
-      a.fireTimer = 0.055;
-      a.obj.updateMatrixWorld(true);
-      const muz = new THREE.Vector3();
-      a.obj.userData.muzzle.getWorldPosition(muz);
-      const dir = new THREE.Vector3(
-        Math.sin(a.gunnerYaw) * Math.cos(a.gunnerPitch),
-        Math.sin(a.gunnerPitch),
-        Math.cos(a.gunnerYaw) * Math.cos(a.gunnerPitch)).normalize();
-      const shooter = { team: a.owner.team, id: a.owner.id, pos: a.obj.position, alive: true,
-                        isHeli: true, ownerActor: a.owner };
-      const hits = resolveShot(g.world, shooter, a.weapon, muz, dir, 0.9 * Math.PI / 180,
-        { tracer: true, tracerColor: [1.0, 0.72, 0.24] });
-      g.effects.muzzleFlash(muz, dir, 2.2);
-      g.audio.play('gun_hammer', { vol: 0.75, reverb: 0.35 });
-      let hitAny = false;
-      for (const h of hits) {
-        if (h.target) {
-          hitAny = true;
-          g.applyDamage(h.target, h.damage, a.owner, 'CHOPPER GUNNER', h.headshot,
-            new THREE.Vector3(h.dirX, h.dirY, h.dirZ), h.zone);
-        }
-      }
-      if (hitAny) g.hud.hitmarker(false, false);
-    }
-    // camera rides the turret
-    const camPos = new THREE.Vector3();
-    a.obj.userData.muzzle.getWorldPosition(camPos);
-    camPos.y += 0.6;
-    g.camera.position.copy(camPos);
-    const e = new THREE.Euler(a.gunnerPitch, a.gunnerYaw + Math.PI, 0, 'YXZ');
-    g.camera.quaternion.setFromEuler(e);
-    g.hud.setGunnerTime(Math.max(0, a.dur - a.t));
   }
 }

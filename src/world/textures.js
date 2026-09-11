@@ -10,7 +10,7 @@ import * as THREE from 'three';
 import { makeRng, clamp } from '../core/util.js';
 
 /* ---- value noise ---------------------------------------------------------- */
-function makeNoise(seed, size = 256) {
+export function makeNoise(seed, size = 256) {
   const r = makeRng(seed);
   const g = new Float32Array(size * size);
   for (let i = 0; i < g.length; i++) g[i] = r();
@@ -27,7 +27,7 @@ function makeNoise(seed, size = 256) {
   };
 }
 
-function fbm(noise, x, y, oct = 5, lac = 2.0, gain = 0.5) {
+export function fbm(noise, x, y, oct = 5, lac = 2.0, gain = 0.5) {
   let s = 0, a = 0.5, f = 1, norm = 0;
   for (let i = 0; i < oct; i++) { s += a * noise(x * f, y * f); norm += a; a *= gain; f *= lac; }
   return s / norm;
@@ -71,7 +71,7 @@ function toTexture(canvas, repeat, srgb) {
 }
 
 /** Build an albedo+normal+roughness set from a per-pixel shader function. */
-function bake(N, seed, shade, bakeOpts = {}) {
+export function bake(N, seed, shade, bakeOpts = {}) {
   const cv = document.createElement('canvas');
   cv.width = cv.height = N;
   const ctx = cv.getContext('2d');
@@ -116,7 +116,7 @@ function bake(N, seed, shade, bakeOpts = {}) {
   return { albedo: cv, rough: rcv, metal: mcv, height, N };
 }
 
-function materialFrom(baked, repeat, opts = {}) {
+export function materialFrom(baked, repeat, opts = {}) {
   /* Several materials share one bake — the container panel is reused tinted three
      ways, and again rotated for drums. The Sobel pass is the expensive part, so
      cache the normal canvas on the bake instead of recomputing it per tint. */
@@ -268,12 +268,22 @@ function roofTile(N = 256) {
 }
 
 /* ---- sky + environment ---------------------------------------------------- */
-export function makeSkyTexture() {
+/**
+ * Equirectangular sky. Every map passes its own colours; the defaults are
+ * exactly the original Dustline dusk, so that map is unchanged.
+ *   zenith   colour straight up        horizon  colour the gradient heads toward
+ *   ground   colour below the horizon  cloud    cloud colour
+ *   cover    cloud threshold (lower = more cloud)   gain  cloud edge hardness
+ */
+export function makeSkyTexture(opts = {}) {
+  const Z = opts.zenith || [120, 138, 158], H = opts.horizon || [216, 204, 176];
+  const G = opts.ground || [62, 56, 48], C = opts.cloud || [214, 206, 196];
+  const cover = opts.cover ?? 0.48, gain = opts.gain ?? 3.2;
   const N = 512;
   const cv = document.createElement('canvas');
   cv.width = N; cv.height = N;
   const ctx = cv.getContext('2d');
-  const noise = makeNoise(0x5C1);
+  const noise = makeNoise(opts.seed || 0x5C1);
   const img = ctx.createImageData(N, N);
   for (let y = 0; y < N; y++) {
     // equirect: y=0 is up
@@ -282,11 +292,11 @@ export function makeSkyTexture() {
     for (let x = 0; x < N; x++) {
       const t = clamp(up * 0.5 + 0.5, 0, 1);
       // hazy desert dusk gradient
-      let r = 120 + (1 - t) * 96, g = 138 + (1 - t) * 66, b = 158 + (1 - t) * 18;
-      if (up < 0) { const k = clamp(-up * 2.2, 0, 1); r = r * (1 - k) + 62 * k; g = g * (1 - k) + 56 * k; b = b * (1 - k) + 48 * k; }
+      let r = Z[0] + (1 - t) * (H[0] - Z[0]), g = Z[1] + (1 - t) * (H[1] - Z[1]), b = Z[2] + (1 - t) * (H[2] - Z[2]);
+      if (up < 0) { const k = clamp(-up * 2.2, 0, 1); r = r * (1 - k) + G[0] * k; g = g * (1 - k) + G[1] * k; b = b * (1 - k) + G[2] * k; }
       const cl = fbm(noise, x / N * 6, y / N * 6, 4);
-      const cloud = clamp((cl - 0.48) * 3.2, 0, 1) * clamp(up * 2.4, 0, 1);
-      r = r * (1 - cloud) + 214 * cloud; g = g * (1 - cloud) + 206 * cloud; b = b * (1 - cloud) + 196 * cloud;
+      const cloud = clamp((cl - cover) * gain, 0, 1) * clamp(up * 2.4, 0, 1);
+      r = r * (1 - cloud) + C[0] * cloud; g = g * (1 - cloud) + C[1] * cloud; b = b * (1 - cloud) + C[2] * cloud;
       const o = (y * N + x) * 4;
       img.data[o] = r; img.data[o + 1] = g; img.data[o + 2] = b; img.data[o + 3] = 255;
     }
@@ -488,6 +498,8 @@ export const SURFACE_KIND = {
   dirt: 'dirt', metal: 'metal', wood: 'wood', sandbag: 'dirt',
   glass: 'glass', rubber: 'dirt', paintA: 'metal', paintB: 'metal', paintC: 'metal',
   drumA: 'metal', drumB: 'metal',
+  bark: 'wood', forest: 'dirt', rock: 'concrete', snow: 'dirt', logwall: 'wood',
+  rust: 'metal', grate: 'metal', brick: 'concrete', glow: 'metal',
 };
 
 /* Blood decal atlas - 2 x 2 tiles of 256 px, in canvas order:
@@ -593,6 +605,36 @@ export function makeBloodAtlas() {
   ctx.putImageData(img, 0, 0);
   const t = new THREE.CanvasTexture(cv);
   t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  return t;
+}
+
+/* ---- blood pool: when the front arrives ------------------------------------
+   R is when a spreading pool's front reaches each texel: 0 at the centre, 1 at
+   the furthest reach. The lobes come from a few angular harmonics and the
+   ragged fingers from fbm (none at the very centre, so a pool starts as a
+   round well), so the front runs out unevenly, like liquid finding the low
+   spots. G is a little noise for the colour. Data, not colour: no sRGB. */
+export function makePoolTexture(N = 256) {
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = N;
+  const ctx = cv.getContext('2d'), img = ctx.createImageData(N, N), px = img.data;
+  const r = makeRng(0xB1009), n1 = makeNoise(0xB1010), n2 = makeNoise(0xB1011);
+  const H = [[2, 0.07], [3, 0.06], [5, 0.045], [7, 0.03], [11, 0.02]].map(([k, a]) => [k, a, r() * 6.283]);
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const u = (x + 0.5) / N * 2 - 1, v = (y + 0.5) / N * 2 - 1;
+    const rad = Math.hypot(u, v), th = Math.atan2(v, u);
+    let reach = 0.74;
+    for (const [k, a, ph] of H) reach += a * Math.sin(k * th + ph);
+    const f = rad / reach + (fbm(n1, u * 4 + 11, v * 4 + 7, 4) - 0.5) * 0.22 * Math.min(1, rad * 2.5);
+    const o = (y * N + x) * 4;
+    px[o] = Math.max(0, Math.min(255, f * 255));
+    px[o + 1] = fbm(n2, u * 9 + 3, v * 9 + 5, 3) * 255;
+    px[o + 2] = 0; px[o + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.NoColorSpace;
   t.anisotropy = 4;
   return t;
 }

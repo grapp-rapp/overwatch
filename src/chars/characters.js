@@ -423,6 +423,24 @@ const LIMP = {
 /* ============================================================================
    Character
    ========================================================================== */
+/* A body lies CORPSE_HOLD seconds, then fades out over CORPSE_FADE; its blood
+   stays on the ground well after it (effects.js). */
+const CORPSE_HOLD = 2.3, CORPSE_FADE = 0.7;
+
+/* a transparent copy of a material for the corpse fade, made once per operator */
+function fadeCopy(F, m) {
+  let f = F.get(m);
+  if (!f) {
+    const ud = m.userData; m.userData = {};            // camo uniforms hold a texture: never JSON it
+    f = m.clone(); m.userData = ud;
+    f.onBeforeCompile = m.onBeforeCompile; f.customProgramCacheKey = m.customProgramCacheKey;
+    f.userData.baseOpacity = m.transparent ? m.opacity : 1;
+    f.transparent = true;
+    F.set(m, f);
+  }
+  return f;
+}
+
 export class Character {
   /**
    * @param {object} o { team:'A'|'B', variant:int, isLocal:bool, layer:int }
@@ -562,6 +580,9 @@ export class Character {
 
     if (o.layer) {
       this._layer = o.layer;
+      // your own gun can sit on a layer of its own, so first person can show
+      // your legs without a second rifle floating under the viewmodel
+      this._weaponLayer = o.weaponLayer || o.layer;
       this.model.traverse(m => m.layers.set(o.layer));
     }
 
@@ -622,8 +643,9 @@ export class Character {
     // _solveArms this makes the muzzle point exactly along the aim vector.
     this.weaponModel.quaternion.copy(_gripQR);
     this.weaponModel.position.copy(_gripOR);
-    if (this._layer) this.weaponModel.traverse(m => m.layers.set(this._layer));
+    if (this._layer) this.weaponModel.traverse(m => m.layers.set(this._weaponLayer));
     this.handSocket.add(this.weaponModel);
+    if (this.onWeapon) this.onWeapon(this.weaponModel);   // e.g. the local player's skin
     this.muzzle = this.weaponModel.userData.muzzle;
     this.foreGrip = this.weaponModel.userData.foreGrip;
   }
@@ -639,7 +661,8 @@ export class Character {
     this.alive = false; this.dead = true; this.deathT = 0;
     this.deathDir.copy(fromDir).setY(0).normalize();
     if (this.deathDir.lengthSq() < 1e-6) this.deathDir.set(0, 0, 1);
-    this.deathSpin = headshot ? this._rng.range(-1.6, 1.6) : this._rng.range(-0.5, 0.5);
+    // a slight turn as the body drops; up to 1.6 rad read as the body rolling over
+    this.deathSpin = headshot ? this._rng.range(-0.6, 0.6) : this._rng.range(-0.25, 0.25);
     this.deathStyle = headshot ? 2 : (this._rng() < 0.42 ? 1 : 0);  // 0 fwd, 1 back, 2 crumple
     // freeze the mixer and remember the pose we died in
     this._deathPose = {};
@@ -654,6 +677,7 @@ export class Character {
     this.alive = true; this.dead = false; this.deathT = 0;
     this.root.rotation.set(0, this.yawOffset, 0);
     this.root.visible = true;
+    this._setFade(1);
     this.hips.position.y = this._hipRestY;
     for (const k in this.bones) this.bones[k].quaternion.copy(this._restLocal[k]);
     this.animW = { idle: 1, walk: 0, run: 0 };
@@ -881,11 +905,13 @@ export class Character {
   _updateDeath(dt) {
     this.deathT += dt;
     const t = this.deathT;
-    const T = 0.95;
+    if (t > CORPSE_HOLD + CORPSE_FADE + 0.1) return;   // gone: nothing left to pose
+    /* A body drops: it accelerates into the ground and bounces once. Easing to a
+       stop instead read as a slow roll. */
+    const T = 0.72;
     const k = clamp(t / T, 0, 1);
-    // ease out with a small settle bounce at the end
-    let e = 1 - Math.pow(1 - k, 2.4);
-    if (k > 0.82) e = 1 + Math.sin((k - 0.82) / 0.18 * Math.PI) * 0.045;
+    let e = k * k * (1.35 - 0.35 * k);
+    if (t > T) e = 1 + Math.sin(Math.min(1, (t - T) / 0.22) * Math.PI) * 0.035;
 
     const fallAxis = this._vtmp.set(this.deathDir.z, 0, -this.deathDir.x).normalize();
     const dir = this.deathStyle === 1 ? -1 : 1;
@@ -896,9 +922,9 @@ export class Character {
     // slide down so the body ends flat on the ground, and drift with momentum
     const drop = -0.78 * e;
     this.root.position.set(
-      this.pos.x + this.deathDir.x * 0.42 * e * dir,
+      this.pos.x + this.deathDir.x * 0.30 * e * dir,
       this.groundY + Math.max(0, this.pos.y - this.groundY) * (1 - e) + drop * 0 + 0.02,
-      this.pos.z + this.deathDir.z * 0.42 * e * dir);
+      this.pos.z + this.deathDir.z * 0.30 * e * dir);
     this.root.position.y = this.groundY + lerp(0, 0.10, e);
 
     // relax the skeleton toward the limp pose
@@ -915,7 +941,33 @@ export class Character {
 
     this.blob.scale.set(1.7, 1.7, 1);
     this.blob.position.y = this.groundY - this.root.position.y + 0.02;
-    this.blob.material.opacity = 0.45 * clamp(1 - (t - 7.5) / 2.0, 0, 1);
+    // the body is gone a few seconds later; its blood is not
+    const fade = clamp(1 - (t - CORPSE_HOLD) / CORPSE_FADE, 0, 1);
+    this.blob.material.opacity = 0.45 * fade;
+    this._setFade(fade);
+    if (fade <= 0) this.root.visible = false;
+  }
+
+  /* Corpse fade. Transparent copies of this operator's materials are swapped
+     in only while it fades (made once, kept), so the gear and weapon materials
+     every operator shares never change and nobody alive pays for blending. */
+  _setFade(k) {
+    if (k >= 1) {
+      if (!this._faded) return;
+      this._faded = false;
+      this.root.traverse(o => { if (o._solid) { o.material = o._solid; o._solid = null; } });
+      return;
+    }
+    const F = this._fadeMats || (this._fadeMats = new Map());
+    this._faded = true;
+    this.root.traverse(o => {
+      if (!o.isMesh || o === this.blob) return;
+      if (!o._solid) {
+        o._solid = o.material;
+        o.material = Array.isArray(o.material) ? o.material.map(m => fadeCopy(F, m)) : fadeCopy(F, o.material);
+      }
+      for (const m of Array.isArray(o.material) ? o.material : [o.material]) m.opacity = m.userData.baseOpacity * k;
+    });
   }
 
   /* ---- hit registration --------------------------------------------------- */

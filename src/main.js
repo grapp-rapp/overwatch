@@ -7,7 +7,8 @@
    geometry into one draw call per material, and cap the device pixel ratio.
    ========================================================================== */
 import * as THREE from 'three';
-import { GameMap, MAP_W, MAP_D } from './world/map.js';
+import { GameMap } from './world/map.js';
+import { MAPS } from './world/maps/index.js';
 import { loadCharacterAssets } from './chars/characters.js';
 import { AudioEngine } from './core/audio.js';
 import { Input } from './core/input.js';
@@ -16,6 +17,7 @@ import { ViewModel } from './weapons/viewmodel.js';
 import { HUD } from './game/hud.js';
 import { Menu } from './game/menu.js';
 import { Game, STATE } from './game/game.js';
+import { currentSkin, skinOperator, handTone } from './game/skins.js';
 import { WEAPONS, PRIMARIES, SECONDARIES } from './weapons/defs.js';
 import { Stat, clamp, lerp, damp, yieldToBrowser } from './core/util.js';
 
@@ -63,12 +65,14 @@ async function main() {
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(85, window.innerWidth / window.innerHeight, 0.055, 320);
   camera.layers.enable(0);
+  const _fwd = new THREE.Vector3(), _upv = new THREE.Vector3();   // first-person legs, see the draw
 
   await progress(0.12, 'GENERATING TERRAIN');
-  const map = new GameMap();
+  /* Every map is a definition; the one on screen is built from it. Built maps
+     are kept, so going back to one you have already played is instant. */
+  let map = new GameMap(MAPS.dustline);
+  const mapCache = new Map([[map.id, map]]);
   scene.add(map.group);
-  scene.background = map.skyTexture;
-  scene.environment = map.skyTexture;
   scene.fog = new THREE.Fog(0x9aa8ac, 68, 240);
 
   await progress(0.34, 'PLACING LIGHTS');
@@ -99,6 +103,26 @@ async function main() {
   scene.add(sun.target);
   sun.target.position.set(0, 0, 0);
 
+  /* A map brings its own weather: sky, fog, the colour and strength of the sky
+     fill and of the sun, which way the sun comes from, and exposure. */
+  const sunOffset = new THREE.Vector3(-46, 58, 32);
+  function applyEnv(m) {
+    const e = m.def.env || {};
+    scene.background = m.skyTexture;
+    scene.environment = m.skyTexture;
+    const f = e.fog || [0x9aa8ac, 68, 240];
+    scene.fog.color.setHex(f[0]); scene.fog.near = f[1]; scene.fog.far = f[2];
+    const h = e.hemi || [0xbcd2e8, 0x4d4133, 0.80];
+    hemi.color.setHex(h[0]); hemi.groundColor.setHex(h[1]); hemi.intensity = h[2];
+    const su = e.sun || [0xffeeda, 3.4];
+    sun.color.setHex(su[0]); sun.intensity = su[1];
+    const d = e.sunDir || [-46, 58, 32];
+    sunOffset.set(d[0], d[1], d[2]);
+    renderer.toneMappingExposure = e.exposure || 1.02;
+    renderer.shadowMap.needsUpdate = true;
+  }
+  applyEnv(map);
+
   // fixed pool of point lights, moved to the nearest fixtures each frame
   const POINTS = 4;
   const pointLights = [];
@@ -128,6 +152,20 @@ async function main() {
 
   const game = new Game({ scene, camera, renderer, map, audio, effects, hud, input, viewmodel });
   hud.g = game;
+
+  /** Put another map on screen and point every system at it. */
+  function switchMap(id) {
+    if (!MAPS[id] || map.id === id) return map;
+    scene.remove(map.group);
+    map = mapCache.get(id) || new GameMap(MAPS[id]);
+    mapCache.set(id, map);
+    scene.add(map.group);
+    applyEnv(map);
+    game.setMap(map);
+    window.__map = map;
+    return map;
+  }
+  window.__switchMap = switchMap;
   const menu = new Menu(game);
   game.menu = menu;
   game.audio = audio;
@@ -149,11 +187,30 @@ async function main() {
   audio.setVolume(menu.cfg.volume);
 
   /* ---- deploy / pause / result wiring ---- */
+  /* Your operator wears your skin and gets its legs-only cut for first person.
+     The match builds a fresh operator for you, so this runs after it has -
+     dressing the old one at deploy left the new one whole, and the camera
+     inside its head - and the draw re-runs it if the operator is rebuilt. */
+  let activeSkin = null;
+  const dressLocal = () => {
+    const c = game.me && game.me.char;
+    if (!c) return;
+    c._firstPerson = true;
+    skinOperator(c, activeSkin || currentSkin());
+  };
+
   game.deploy = () => {
     audio.resume();
+    switchMap(menu.cfg.map || 'dustline');
     menu.show(false);
+    // your skin: the viewmodel gun and fist now, your operator once the match
+    // has built it (dressLocal, below)
+    activeSkin = currentSkin();
+    viewmodel.setSkin(activeSkin);
+    viewmodel.setHand(handTone());
     viewmodel.setWeapon(WEAPONS[menu.cfg.primary]);
     game.startMatch({ ...menu.cfg });
+    dressLocal();
     $('result').classList.add('hidden');
     $('pause').classList.add('hidden');
     requestLock();
@@ -292,7 +349,7 @@ async function main() {
         crouch: me.crouch, sprint: me.sprint, lookDX: look.x, lookDY: look.y,
         reloading: W.reloading, reloadProgress: W.reloading ? W.reloadT / Math.max(0.01, W.reloadDur) : 0,
         equipT: me.swapT, equipDur: Math.max(0.01, me.swapDur),
-        hidden: viewmodel.hidden || !me.alive || me.inGunner || game.state === STATE.KILLCAM,
+        hidden: viewmodel.hidden || !me.alive || game.state === STATE.KILLCAM,
         boltT: W.bolting ? W.boltT : 0, boltDur: W.def.boltTime || 1,
         magEmpty: W.mag <= 0, sunDirCam: sunCamDir,
         melee: me.meleeT > 0 ? 1 - me.meleeT / (me.meleeDur || 0.6) : 0,
@@ -320,7 +377,7 @@ async function main() {
     }
     // keep the shadow frustum tight around the player
     sun.target.position.set(cp.x * 0.55, 0, cp.z * 0.55);
-    sun.position.set(cp.x * 0.55 - 46, 58, cp.z * 0.55 + 32);
+    sun.position.set(cp.x * 0.55 + sunOffset.x, sunOffset.y, cp.z * 0.55 + sunOffset.z);
 
     /* ---- per-frame culling of skinned operators ----
        Skinned meshes carry frustumCulled=false because their bind-pose bounds go
@@ -351,7 +408,7 @@ async function main() {
         const castNear = d2 < 12 * 12;
         if (a.char._castNear !== castNear) {
           a.char._castNear = castNear;
-          a.char.model.traverse(o => { if (o.isMesh) o.castShadow = castNear; });
+          a.char.model.traverse(o => { if (o.isMesh && !o.userData.fpLegs) o.castShadow = castNear; });
         }
         if (a.char.visorMesh) {
           const showVisor = vis && d2 < 18 * 18;
@@ -393,7 +450,30 @@ async function main() {
     if (window.__noRender) { input.endFrame(); cpuStat.push(performance.now() - cpu0); return; }
     renderer.info.reset();
     renderer.clear();
-    if (game.state === STATE.KILLCAM) camera.layers.enable(3); else camera.layers.disable(3);
+    /* your own body. In a killcam you are seen whole, gun and all (layers 3-5).
+       In play your camera draws the legs-only cut of your body (6, built in
+       skins.js) and any gear at the waist (3); the full body, the gear above
+       the waist (5) and your third-person gun (4) stay in the shadow pass only.
+       Looking down eases the body back a little, so you see legs and boots
+       rather than straight down into your belt. */
+    const meC = game.me && game.me.char;
+    if (meC && !meC._firstPerson) dressLocal();
+    const L = camera.layers;
+    if (game.state === STATE.KILLCAM) { L.enable(3); L.enable(4); L.enable(5); L.disable(6); }
+    else {
+      L.disable(4); L.disable(5);
+      // __noLegs: QA switch for an A/B frame-time run
+      const legs = !window.__noLegs && game.state === STATE.LIVE && meC && game.me.alive && !meC.dead;
+      if (legs) {
+        camera.getWorldDirection(_fwd);
+        _upv.set(0, 1, 0).applyQuaternion(camera.quaternion);
+        const cosP = Math.sqrt(Math.max(0, 1 - _fwd.y * _fwd.y)), sinP = _fwd.y;
+        const hx = _fwd.x * cosP - _upv.x * sinP, hz = _fwd.z * cosP - _upv.z * sinP, hl = Math.hypot(hx, hz) || 1;
+        const k = clamp((-_fwd.y - 0.25) / 0.6, 0, 1), off = 0.24 * k * k * (3 - 2 * k);
+        meC.root.position.x -= hx / hl * off; meC.root.position.z -= hz / hl * off;
+        L.enable(3); L.enable(6);
+      } else { L.disable(3); L.disable(6); }
+    }
     renderer.render(scene, camera);
     if (game.state !== STATE.MENU && game.state !== STATE.RESULT) {
       viewmodel.render(renderer, camera.aspect, 1);

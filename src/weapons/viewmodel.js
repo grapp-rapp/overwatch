@@ -10,7 +10,9 @@
    Change the optic and the ADS pose follows automatically.
    ========================================================================== */
 import * as THREE from 'three';
+import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { cloneWeapon, buildLethal } from './models.js';
+import { skinWeapon, skinMaterialFor } from '../game/skins.js';
 import { FIRE } from './defs.js';
 import { meleeCurve, clamp, lerp, damp, makeRng } from '../core/util.js';
 import { makeFlashTexture } from '../world/textures.js';
@@ -74,7 +76,24 @@ export class ViewModel {
     this.flashLight.visible = false;
     this.scene.add(this.flashLight);
     this.flashT = 0;
+
+    /* the free hand, for melee: a bare fist, and a sleeve that wears the skin */
+    const f = buildFist();
+    this.fist = f.group; this.fistSkin = f.skin; this.fistSleeve = f.sleeve;
+    this.fist.visible = false;
+    this.scene.add(this.fist);
+    this.skin = null;
   }
+
+  /** Wear a skin: camo on the gun and on the punching arm's sleeve. */
+  setSkin(skin) {
+    this.skin = skin;
+    if (this.weapon) skinWeapon(this.weapon, skin);
+    this.fistSleeve.material = skinMaterialFor('sleeve', skin);
+  }
+
+  /** The punching hand's skin tone (SKINS tab). */
+  setHand(hex) { this.fistSkin.material.color.setHex(hex); }
 
   setWeapon(def) {
     // detach only: clones share the prototype's geometry and materials, so
@@ -83,6 +102,7 @@ export class ViewModel {
     this.def = def;
     this.weapon = cloneWeapon(def);
     this.weapon.traverse(o => { o.castShadow = false; o.receiveShadow = false; });
+    if (this.skin) skinWeapon(this.weapon, this.skin);
     this.hand.add(this.weapon);
     const oe = this.weapon.userData.opticEye.position;
     this.optic.copy(oe);
@@ -184,13 +204,16 @@ export class ViewModel {
     // equip: swing up from below
     p.y -= equipK * 0.34;
     p.z += equipK * 0.12;
-    /* melee: wind the weapon back and to the right, then drive it forward and
-       across the body. The curve is shared with the third-person body. */
-    const mc = meleeCurve(s.melee || 0, this._mc || (this._mc = {}));
-    const mAds = 1 - smooth(this.adsW) * 0.6;
-    p.x += (mc.wind * 0.050 - mc.strike * 0.105) * mAds;
-    p.y += (mc.strike * 0.040 - mc.wind * 0.030) * mAds;
-    p.z += (mc.wind * 0.085 - mc.strike * 0.230) * mAds;
+    /* melee: the gun drops out of the way and the free hand punches. The
+       punch rides the same curve as the third-person swing, so the hit lands
+       as the fist arrives. The first version swung the rifle itself, and what
+       you saw was a gun, not a punch. */
+    const mk = s.melee || 0;
+    const mc = meleeCurve(mk, this._mc || (this._mc = {}));
+    const stow = mk <= 0 || mk >= 1 ? 0 : mk < 0.10 ? smooth(mk / 0.10) : mk < 0.62 ? 1 : 1 - smooth((mk - 0.62) / 0.38);
+    p.x += 0.10 * stow;
+    p.y -= 0.24 * stow;
+    p.z += 0.05 * stow;
 
     /* ---- compose rotation ---- */
     const e = this._e;
@@ -202,12 +225,27 @@ export class ViewModel {
     e.x += this.sprint * 0.26;
     e.x -= equipK * 0.75;
     e.y += equipK * 0.35;
-    e.x += (mc.strike * 0.22 - mc.wind * 0.10) * mAds;
-    e.y += (mc.strike * 0.62 - mc.wind * 0.30) * mAds;
-    e.z += (mc.strike * 0.50 - mc.wind * 0.28) * mAds;
+    e.x -= 0.50 * stow;
+    e.y -= 0.20 * stow;
+    e.z -= 0.35 * stow;
 
     this.rig.position.copy(p);
     this.rig.rotation.copy(e);
+
+    /* the fist: up from below the screen into a guard, straight out to just
+       under the crosshair, and back down */
+    const F = this.fist;
+    if (mk > 0 && mk < 1 && !this.hidden) {
+      const fp = this._fp || (this._fp = new THREE.Vector3());
+      const up = smooth(clamp(mk / 0.14, 0, 1)), down = smooth(clamp((mk - 0.55) / 0.40, 0, 1));
+      fp.copy(FIST_START).lerp(FIST_GUARD, up * (1 - down)).lerp(FIST_HIT, mc.strike);
+      F.position.copy(fp);
+      // the forearm always points back at the shoulder; the fist turns from a
+      // thumb-up guard to palm-down as it lands
+      const d = (this._fd || (this._fd = new THREE.Vector3())).copy(FIST_SHOULDER).sub(fp).normalize();
+      F.rotation.set(Math.atan2(-d.y, d.z), Math.atan2(d.x, Math.hypot(d.y, d.z)), 0.15 + 0.9 * up * (1 - mc.strike));
+      F.visible = true;
+    } else F.visible = false;
 
     /* ---- moving parts ---- */
     if (this.slideObj) {
@@ -369,4 +407,116 @@ export class Projectile {
     }
   }
   dispose() { disposeTree(this.mesh); }
+}
+
+/* The punching hand: a real fist rather than a glove of boxes. The back of the
+   hand and palm are one tapered, domed block with the tendons raised; four
+   fingers of three phalanges each curl down from the knuckles, back under the
+   palm and tuck in; the thumb wraps across the front of the index and middle
+   fingers. Wrist, a bare forearm, and a sleeve rolled to mid-forearm that
+   wears your skin. It comes up from below the screen into a guard at the lower
+   left, jabs out to just under the crosshair on the same timing curve as the
+   hit, and falls away; the forearm always points back at the shoulder. */
+const FIST_START = new THREE.Vector3(-0.13, -0.44, -0.26);     // below the bottom of the screen
+const FIST_GUARD = new THREE.Vector3(-0.16, -0.12, -0.30);     // raised, lower left
+const FIST_HIT = new THREE.Vector3(-0.03, -0.075, -0.50);      // just under the crosshair
+const FIST_SHOULDER = new THREE.Vector3(-0.22, -0.30, 0.10);
+
+const V3 = (x, y, z) => new THREE.Vector3(x, y, z);
+/* a capsule from a to b */
+function capsule(a, b, r) {
+  const d = new THREE.Vector3().subVectors(b, a), len = d.length();
+  const g = new THREE.CapsuleGeometry(r, len, 5, 12);
+  g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(V3(0, 1, 0), d.normalize()));
+  g.translate((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2);
+  return g;
+}
+function ellipsoid(c, rx, ry, rz, basis) {
+  const g = new THREE.SphereGeometry(1, 16, 12);
+  g.scale(rx, ry, rz);
+  if (basis) g.applyMatrix4(basis);
+  g.translate(c.x, c.y, c.z);
+  return g;
+}
+/* each part carries a colour multiplier on the skin tone, so one material can
+   draw a redder knuckle and a paler nail */
+function tone(g, m) {
+  if (g.attributes.uv) g.deleteAttribute('uv');
+  const n = g.attributes.position.count, c = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) c.set(m, i * 3);
+  g.setAttribute('color', new THREE.BufferAttribute(c, 3));
+  return g;
+}
+const SKIN = [1, 1, 1], KNUCKLE = [1.07, 0.86, 0.85], TIP = [1.05, 0.9, 0.88], NAIL = [1.3, 1.2, 1.16];
+
+/* back of the hand and palm as one block: narrower at the wrist, domed on top,
+   the tendons standing out toward the knuckles */
+function handBlock() {
+  let g = new THREE.BoxGeometry(0.080, 0.030, 0.092, 8, 4, 8);
+  const p = g.attributes.position, v = new THREE.Vector3(), c = new THREE.Vector3();
+  for (let i = 0; i < p.count; i++) {
+    v.fromBufferAttribute(p, i);
+    c.set(clamp(v.x, -0.028, 0.028), clamp(v.y, -0.003, 0.003), clamp(v.z, -0.034, 0.034));
+    v.sub(c); if (v.lengthSq() > 1e-12) v.setLength(0.012); v.add(c);
+    const t = (v.z + 0.046) / 0.092;
+    v.x *= 1 - 0.18 * t;
+    if (v.y > 0) {
+      v.y += 0.004 * (1 - Math.min(1, (v.x / 0.04) ** 2));
+      for (const xi of [0.027, 0.009, -0.010, -0.027]) v.y += 0.0011 * Math.exp(-(((v.x - xi) / 0.0045) ** 2)) * (1 - t);
+    }
+    p.setXYZ(i, v.x, v.y, v.z);
+  }
+  g.deleteAttribute('normal'); g.deleteAttribute('uv');
+  g = mergeVertices(g);
+  g.computeVertexNormals();
+  g.translate(0, 0, -0.041);
+  return g;
+}
+
+/* x, knuckle y, knuckle z, three phalanx lengths, radius, sideways curl */
+const FINGERS = [
+  [0.027, 0.004, -0.086, 0.040, 0.025, 0.018, 0.0093, -0.06],
+  [0.009, 0.006, -0.090, 0.044, 0.028, 0.020, 0.0097, 0],
+  [-0.010, 0.004, -0.087, 0.041, 0.026, 0.019, 0.0091, 0.03],
+  [-0.027, 0.000, -0.080, 0.033, 0.020, 0.016, 0.0080, 0.08],
+];
+
+function buildFist() {
+  const parts = [tone(handBlock(), SKIN)];
+  for (const [x, y, z, l1, l2, l3, r, sx] of FINGERS) {
+    const k = V3(x, y, z);
+    parts.push(tone(ellipsoid(k, r * 1.12, r, r * 1.15), KNUCKLE));
+    const j1 = k.clone().addScaledVector(V3(sx, -1, -0.1).normalize(), l1);
+    const j2 = j1.clone().addScaledVector(V3(sx * 0.5, -0.12, 1).normalize(), l2);
+    const j3 = j2.clone().addScaledVector(V3(0, 1, 0.3).normalize(), l3);
+    parts.push(tone(capsule(k, j1, r), SKIN), tone(capsule(j1, j2, r * 0.93), SKIN), tone(capsule(j2, j3, r * 0.84), TIP));
+  }
+  /* the thumb: the muscle at its base, then wrapped across the front of the fist */
+  const t0 = V3(0.028, -0.004, -0.010), t1 = V3(0.040, -0.020, -0.050), t2 = V3(0.032, -0.046, -0.074), t3 = V3(0.008, -0.054, -0.082);
+  parts.push(tone(ellipsoid(V3(0.028, -0.010, -0.030), 0.017, 0.013, 0.027), SKIN));
+  parts.push(tone(capsule(t0, t1, 0.0125), SKIN), tone(capsule(t1, t2, 0.0115), SKIN), tone(capsule(t2, t3, 0.0105), TIP));
+  const td = t3.clone().sub(t2).normalize(), out = V3(0, -0.6, -0.8).normalize();
+  const side = new THREE.Vector3().crossVectors(td, out).normalize();
+  out.crossVectors(side, td).normalize();
+  const nail = t2.clone().lerp(t3, 0.72).addScaledVector(out, 0.0092);
+  parts.push(tone(ellipsoid(nail, 0.0068, 0.0021, 0.0058, new THREE.Matrix4().makeBasis(td, out, side)), NAIL));
+  /* wrist and bare forearm, oval in section */
+  const wrist = new THREE.CylinderGeometry(1, 1, 0.055, 18, 1, true);
+  wrist.rotateX(Math.PI / 2); wrist.scale(0.030, 0.021, 1); wrist.translate(0, -0.001, 0.022);
+  const arm = new THREE.CylinderGeometry(1.32, 1, 0.30, 18, 1, true);
+  arm.rotateX(Math.PI / 2); arm.scale(0.030, 0.022, 1); arm.translate(0, 0, 0.19);
+  parts.push(tone(wrist, SKIN), tone(arm, SKIN));
+  const hg = mergeGeometries(parts, false);
+  hg.translate(0, 0, 0.05);            // the fist, not the wrist, at the origin
+  const skin = new THREE.Mesh(hg, new THREE.MeshPhysicalMaterial({
+    color: 0xc68b64, vertexColors: true, roughness: 0.55, metalness: 0,
+    sheen: 0.35, sheenRoughness: 0.55, sheenColor: new THREE.Color(0xffb99c) }));
+  /* a sleeve rolled to mid-forearm, wearing the skin */
+  const sl = new THREE.CylinderGeometry(0.057, 0.051, 0.37, 16, 1);
+  sl.rotateX(Math.PI / 2); sl.translate(0, 0, 0.235 + 0.185);
+  const cuff = new THREE.TorusGeometry(0.052, 0.011, 8, 20); cuff.translate(0, 0, 0.235);
+  const sleeve = new THREE.Mesh(mergeGeometries([sl, cuff], false), new THREE.MeshStandardMaterial({ color: 0x8c9678, roughness: 0.92 }));
+  const group = new THREE.Group();
+  group.add(skin, sleeve);
+  return { group, skin, sleeve };
 }
