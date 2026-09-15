@@ -157,9 +157,10 @@ tanks drawn as instanced shapes over their boxes.
 | Map | Size | |
 |---|---|---|
 | **DUSTLINE** | 62 x 46 m | Desert compounds with upper floors, two warehouses with catwalks, a raised centre pad. Three fast lanes. |
-| **TIMBERLINE** | 64 x 48 m | A logging camp in pine and oak woods. Trunks break every sightline; a railed watchtower on each side sees over them; an open sawmill in the middle. |
+| **TIMBERLINE** | 64 x 48 m | A logging camp in pine and oak woods. Trunks break every sightline; a railed watchtower on each side sees over them; an open sawmill in the middle; old tanks left in the trees. |
 | **WHITEOUT** | 64 x 46 m | An arctic radar station. Long lanes over snow, two station modules to clear room by room, a radar tower in the middle with nowhere to hide. |
 | **FOUNDRY** | 62 x 46 m | A steelworks at dusk. A furnace hall across the rail line with a catwalk down each side; rusted yards outside. |
+| **TRENCHLINE** | 64 x 48 m | A fortified hill of deep stone-walled trenches (2.4 m: stand on a firing step to see out). Zigzag lines from each side's sunken yard, tunnels under the hill between them and from the command bunker, bunkers with firing slits at ground level, and the open hill above, with tanks parked on it. |
 
 Each brings its own sky, fog, sun and exposure. Spawns are scored at selection
 time against every live enemy and never place you where one can already see you.

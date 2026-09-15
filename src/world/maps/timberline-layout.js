@@ -84,6 +84,12 @@ export function describeTimberline(B) {
     B.add(-13.8, 0, -19.9, -8.2, 1.6, -17.8, 'bark', { vis: false });
     for (const [x, z] of [[-4.5, 12], [-16, 18], [-27, 16.5], [-2.8, -18], [-19, 3.9], [-13, 20.5]]) B.stump(x, z);
 
+    /* two old tanks left in the woods, for the look: one in the clearing past the
+       rocks, one by the north ridge (with the mirror, four). Placed before the
+       trees, so the woods grow round them. */
+    B.mbt(-15.5, 14.6, 0);
+    B.mbt(-24, -20.2, 0);
+
     /* the woods: scattered clear of the road, the spawn clearing and everything built */
     const r = makeRng(0x7B1), trees = [];
     const clear = (x, z, pad) => !B.boxes.some(b => b.solid && b.y1 > 0.05 && b.y0 < 3 &&

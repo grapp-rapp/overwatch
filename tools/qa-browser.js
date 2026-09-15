@@ -1008,17 +1008,32 @@ export async function testTeamAirstrike() {
   }
 
   /* A sheltered spot with an exposed one inside a single blast radius of it —
-     the pair is what makes the open-sky rule falsifiable rather than decorative. */
+     the pair is what makes the open-sky rule falsifiable rather than decorative.
+     Exposed means open ground, not a strip of sky: at the bottom of a 2 m trench
+     the sky is straight up, but the walls stand between the target and every
+     bomb that does not land in the trench with it (TRENCHLINE, where this first
+     picked one). So the open spot needs level ground and sky 1.5 m round it, and
+     where the ground level is all trench the two may sit on different floors: a
+     bunker's, and the hill beside it. */
+  /* open at the spot and on at least three sides 1.5 m out: a trench floor is walled
+     on two opposite sides, a spot beside a building on one (WHITEOUT has no other) */
+  const okAt = (x, z, y) => Math.abs(g.groundHeight(x, z, y + 0.5, 0.4) - y) < 0.2 &&
+    !g.map.pointBlocked(x, y + 0.9, z, 0.3) && underOpenSky(g.world, x, y + 1.7, z);
+  const openAround = (x, z, y) => okAt(x, z, y) &&
+    [[1.5, 0], [-1.5, 0], [0, 1.5], [0, -1.5]].filter(([dx, dz]) => okAt(x + dx, z + dz, y)).length >= 3;
   let pair = null;
-  for (let x = -BW(); x <= BW() && !pair; x += 0.5) for (let z = -BD(); z <= BD(); z += 0.5) {
-    const gy = g.groundHeight(x, z, 0.5, 0.4);
-    if (gy > 0.3 || underOpenSky(g.world, x, gy + 1.7, z)) continue;
-    for (const [dx, dz] of [[2.5, 0], [-2.5, 0], [0, 2.5], [0, -2.5], [2, 2], [-2, -2]]) {
-      const ox = x + dx, oz = z + dz;
-      const ogy = g.groundHeight(ox, oz, 0.5, 0.4);
-      if (ogy > 0.3 || !underOpenSky(g.world, ox, ogy + 1.7, oz)) continue;
-      pair = { covered: [x, z], open: [ox, oz] }; break;
+  for (const openMax of [0.3, 3.0]) {        // 3.0: TRENCHLINE's hill stands 2.1 m up, its roofs 3.2
+    for (let x = -BW(); x <= BW() && !pair; x += 0.5) for (let z = -BD(); z <= BD() && !pair; z += 0.5) {
+      const gy = g.groundHeight(x, z, 0.5, 0.4);
+      // room for a body too: groundHeight answers 0 inside a solid, and the first pair found was two points inside the hill
+      if (gy > 0.3 || g.map.pointBlocked(x, gy + 0.9, z, 0.3) || underOpenSky(g.world, x, gy + 1.7, z)) continue;
+      for (const [dx, dz] of [[2.5, 0], [-2.5, 0], [0, 2.5], [0, -2.5], [2, 2], [-2, -2]]) {
+        const ox = x + dx, oz = z + dz, ogy = g.groundHeight(ox, oz, openMax + 0.2, 0.4);
+        if (ogy > openMax || !openAround(ox, oz, ogy)) continue;
+        pair = { covered: [x, z, gy], open: [ox, oz, ogy] }; break;
+      }
     }
+    if (pair) break;
   }
   if (!pair) return { name: 'team airstrike', pass: false, note: 'no covered/open pair on the map' };
 
@@ -1027,13 +1042,13 @@ export async function testTeamAirstrike() {
   for (const a of g.actors) a.bot = null;          // only the strike may do damage
   g.teamStrikeUsed = { A: false, B: false };
 
+  const spotAt = (x, z) => [x, z, g.groundHeight(x, z, pair.open[2] + 0.5, 0.4)];
   const spots = new Map([
     [eOpen, pair.open], [eCov, pair.covered],
-    [fOpen, [pair.open[0], pair.open[1] - 1.6]],   // friendly, squarely in the blast
-    [me, [pair.open[0], pair.open[1] - 4.5]],
+    [fOpen, spotAt(pair.open[0], pair.open[1] - 1.6)],   // friendly, squarely in the blast
+    [me, spotAt(pair.open[0], pair.open[1] - 4.5)],
   ]);
-  const pin = () => { for (const [a, [x, z]] of spots) {
-    a.pos.set(x, g.groundHeight(x, z, 0.5, 0.4), z); a.vel.set(0, 0, 0); } };
+  const pin = () => { for (const [a, [x, z, y]] of spots) { a.pos.set(x, y, z); a.vel.set(0, 0, 0); } };
   for (const [a] of spots) { a.alive = true; a.health = 100; if (a.char) a.char.revive(); }
   pin();
 
@@ -1156,11 +1171,12 @@ export async function testMelee() {
   let wall = null;
   for (let x = -BW(); x <= BW() && !wall; x += 0.5) {
     for (let z = -BD(); z <= BD() && !wall; z += 0.5) {
-      const y0 = g.groundHeight(x, z, 0.5, 0.4);
-      if (y0 > 0.3 || solidAt(x, z, y0)) continue;
+      // any floor up to a metre, the same on both sides: TRENCHLINE's bunkers stand 0.9 m up
+      const y0 = g.groundHeight(x, z, 1.2, 0.4);
+      if (y0 > 1.0 || solidAt(x, z, y0)) continue;
       for (const [dx, dz] of [[1.4, 0], [-1.4, 0], [0, 1.4], [0, -1.4]]) {
-        const x1 = x + dx, z1 = z + dz, y1 = g.groundHeight(x1, z1, 0.5, 0.4);
-        if (y1 > 0.3 || solidAt(x1, z1, y1)) continue;
+        const x1 = x + dx, z1 = z + dz, y1 = g.groundHeight(x1, z1, 1.2, 0.4);
+        if (y1 > 1.0 || Math.abs(y1 - y0) > 0.1 || solidAt(x1, z1, y1)) continue;
         if (M.lineOfSight(x, y0 + 1.3, z, x1, y1 + 1.3, z1)) continue;
         wall = { a: [x, z, y0], b: [x1, z1, y1] };
         break;

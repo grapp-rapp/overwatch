@@ -58,6 +58,8 @@ function materials() {
     white: new THREE.MeshStandardMaterial({ color: 0xe6eaec, roughness: 0.42, metalness: 0.3 }),
     steel: new THREE.MeshStandardMaterial({ color: 0x6d7479, roughness: 0.4, metalness: 0.85 }),
     lamp: new THREE.MeshStandardMaterial({ color: 0x222222, emissive: 0xffd9a0, emissiveIntensity: 3 }),
+    olive: new THREE.MeshStandardMaterial({ color: 0x4d5534, roughness: 0.74, metalness: 0.3 }),
+    track: new THREE.MeshStandardMaterial({ color: 0x2a2b28, roughness: 0.9, metalness: 0.4 }),
   };
 }
 
@@ -117,6 +119,26 @@ function build() {
   L.stack = [{ geo: cyl(0.5, 0.5, 1, 16, 0), mat: M.rust, shadow: true }];
   const bulb = new THREE.SphereGeometry(0.16, 10, 6); bulb.translate(0, 3.25, 0);
   L.lamp = [{ geo: cyl(0.05, 0.07, 3.2, 6, 0), mat: M.steel, shadow: true }, { geo: bulb, mat: M.lamp, shadow: false }];
+  /* a main battle tank, for the look: 7.4 m from the back to the glacis, the gun along +x */
+  const bx = (w, h, d, x, y, z, rz = 0) => { const g = new THREE.BoxGeometry(w, h, d); if (rz) g.rotateZ(rz); g.translate(x, y, z); return g; };
+  const alongX = (r0, r1, len, seg, x, y, z) => { const g = new THREE.CylinderGeometry(r0, r1, len, seg); g.rotateZ(-Math.PI / 2); g.translate(x, y, z); return g; };
+  const alongZ = (r, len, seg, x, y, z) => { const g = new THREE.CylinderGeometry(r, r, len, seg); g.rotateX(Math.PI / 2); g.translate(x, y, z); return g; };
+  const turret = new THREE.CylinderGeometry(1.2, 1.4, 0.75, 8); turret.scale(1.25, 1, 1); turret.translate(-0.4, 1.925, 0);
+  const hatch = new THREE.CylinderGeometry(0.32, 0.36, 0.2, 10); hatch.translate(-0.9, 2.4, 0.45);
+  const hull = merge([
+    bx(6.4, 0.8, 2.3, 0, 0.8, 0), bx(6.8, 0.35, 3.6, 0, 1.375, 0),              // lower hull, deck over the tracks
+    bx(1.42, 0.12, 3.5, 3.6, 1.175, 0, -0.56), bx(1.8, 0.1, 2.6, -2.4, 1.6, 0), // glacis, engine deck
+    bx(6.2, 0.45, 0.06, 0, 0.98, 1.8), bx(6.2, 0.45, 0.06, 0, 0.98, -1.8),      // side skirts
+    turret, bx(0.5, 0.55, 0.9, 1.35, 1.95, 0), bx(0.6, 0.45, 2.0, -2.05, 1.9, 0), hatch,
+    alongX(0.09, 0.1, 4.4, 10, 3.55, 1.95, 0), alongX(0.14, 0.14, 0.5, 10, 3.8, 1.95, 0), alongX(0.12, 0.12, 0.25, 10, 5.65, 1.95, 0),
+  ]);
+  const running = [];
+  for (const s of [-1, 1]) {
+    // down to 2 cm off the ground: at 10 cm the tank looked as if it hovered
+    running.push(bx(6.6, 0.78, 0.62, 0, 0.41, s * 1.45), alongZ(0.39, 0.62, 12, 3.3, 0.41, s * 1.45), alongZ(0.39, 0.62, 12, -3.3, 0.41, s * 1.45));
+    for (let i = 0; i < 6; i++) running.push(alongZ(0.2, 0.7, 8, -2.5 + i, 0.36, s * 1.45));
+  }
+  L.mbt = [{ geo: hull, mat: M.olive, shadow: true }, { geo: merge(running), mat: M.track, shadow: true }];
   return L;
 }
 

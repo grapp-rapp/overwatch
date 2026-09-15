@@ -500,6 +500,7 @@ export const SURFACE_KIND = {
   drumA: 'metal', drumB: 'metal',
   bark: 'wood', forest: 'dirt', rock: 'concrete', snow: 'dirt', logwall: 'wood',
   rust: 'metal', grate: 'metal', brick: 'concrete', glow: 'metal',
+  stonewall: 'concrete', capstone: 'concrete', hillside: 'dirt',
 };
 
 /* Blood decal atlas - 2 x 2 tiles of 256 px, in canvas order:

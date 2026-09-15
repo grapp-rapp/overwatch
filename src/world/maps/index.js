@@ -11,6 +11,7 @@ import { DUSTLINE } from '../map.js';
 import { TIMBERLINE } from './timberline.js';
 import { WHITEOUT } from './whiteout.js';
 import { FOUNDRY } from './foundry.js';
+import { TRENCHLINE } from './trenchline.js';
 
-export const MAPS = { dustline: DUSTLINE, timberline: TIMBERLINE, whiteout: WHITEOUT, foundry: FOUNDRY };
-export const MAP_ORDER = ['dustline', 'timberline', 'whiteout', 'foundry'];
+export const MAPS = { dustline: DUSTLINE, timberline: TIMBERLINE, whiteout: WHITEOUT, foundry: FOUNDRY, trenchline: TRENCHLINE };
+export const MAP_ORDER = ['dustline', 'timberline', 'whiteout', 'foundry', 'trenchline'];

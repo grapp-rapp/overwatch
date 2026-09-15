@@ -320,7 +320,11 @@ export class Killstreaks {
             const off = (idx - (a.bombs - 1) / 2) * a.spacing;
             const px = a.aim.x + Math.sin(a.heading) * off;
             const pz = a.aim.z + Math.cos(a.heading) * off;
-            g.scheduleExplosion(px, 0.4, pz, a.stealth ? 8.5 : 7.4,
+            /* on whatever the bomb lands on - the hill, a roof, a trench floor. A fixed
+               0.4 m put every blast inside TRENCHLINE's hill, where it hurt nobody,
+               and let a roof on any map shelter the people standing on it. */
+            const py = g.groundHeight(px, pz, 60, 0.2) + 0.4;
+            g.scheduleExplosion(px, py, pz, a.stealth ? 8.5 : 7.4,
               a.stealth ? 210 : 185, 30, a.owner, 0.30 + idx * 0.055,
               a.teamOnly ? { enemiesOnly: true, openSkyOnly: true, label: 'AIRSTRIKE' } : null);
           }

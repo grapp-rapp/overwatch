@@ -1341,3 +1341,128 @@ headshots went into the player's real save (one, at 06:33, is certain). A page
 that loads `tools/qa-browser.js` now banks nothing outside a `guardProfile()`
 section (`window.__qaNoBank`), and the test tab is paused or closed when a
 session ends.
+
+## TRENCHLINE: a fortified hill, and tanks in the woods
+
+**Built from boxes, the other way round.** Every map here is one list of
+axis-aligned boxes, and the navmesh only knows floors at or above y = 0, so a
+trench cannot be dug. Instead the trench floors are the ground and the hill is
+a surface 1.5 m above them, cut from a mask of half-metre cells
+(`trenchline-layout.js`). Every cut is made twice, the second turned half
+round, so the map keeps the 180-degree symmetry of the others. The cells left
+standing are merged into as few boxes as the rows allow, faced with dry stone
+and skinned with grass. A stepped capstone 0.3 m high runs along every open
+edge: a standing player in a trench (eyes at 1.63 m) is just hidden, and a
+0.45 m firing step puts the eyes over it. From a step a player can also climb
+out (1.35 m, inside the 1.55 m mantle); bots use the three flights of stairs on
+each side.
+
+**The network.** Each side has a sunken spawn yard and two lines. The centre
+line zigzags to a command bunker across the middle; the north line crosses the
+hill and drops into the other side's centre line, so the lines form a loop. A
+tunnel covers part of each line, and an observation post opens off the north
+line. Bunkers and tunnels have concrete walls rising 0.85 m above the hill,
+with firing slits at ground level (1.6 to 1.95 m inside, where a standing
+player's eyes are), a capstone roof under earth, and a lamp. The roofs sit
+1.1 m above the hill, within a bot's climb (1.15 m), so the command bunker's
+roof is the high ground, and `mustReach` requires it.
+
+**Tanks.** A new instanced prop, `mbt` in props.js: hull, glacis, side skirts,
+a flattened eight-sided turret, a barrel with a bore evacuator, and tracks with
+road wheels, in two draw calls per batch. `MapBuilder.mbt` adds its colliders:
+hull and turret stop bodies and bullets and can be climbed; the barrel collides
+only when the tank lies along an axis. Two stand on TRENCHLINE's hill and two in
+TIMBERLINE's woods (four each with the mirrors). The woods' tanks are placed
+before the trees, so the trees grow round them.
+
+**Surfaces.** Three new bakes in biomes.js: `stonewall` (cellular limestone
+blocks with soil in the gaps, on a grid that wraps so it tiles), `capstone`
+(pale, pitted lime mortar) and `hillside` (grass worn through to pale soil).
+
+**Checked before the browser.** A Node pass over the layout with a stand-in
+builder found 657 boxes, 8 spawns a side with none inside a solid, no tank or
+tree over a cut, and all three `mustReach` roofs at 2.6 m. In the game the map
+builds with no errors: 5937 of 6440 nav cells are walkable, 162 of them with a
+second level (under the roofs), joined by 9197 drop and climb links.
+
+**What the tests found, and the fixes.** The map walk got stuck once. The
+navmesh counts a surface under a cell if any part of a body's footprint touches
+it, so it had nodes on the narrow capstone at a trench's edge, and from the
+upper treads of a flight of stairs it linked a 1.05 m climb onto one across the
+trench corner; a body falls into the trench on the way. Now no capstone sits
+within 1.5 m of a flight, and the flights open flush onto the grass. The melee
+test found no thin wall with the same floor on both sides, which this map did
+not have, so the command bunker is now two rooms, with a 0.3 m wall and a 1.4 m
+doorway between them. The airstrike test first chose its exposed spot at the
+bottom of a trench: sky straight up, walls all round, so only a bomb landing in
+the trench itself could reach it. Once required to find level open ground, it
+chose two points inside the solid hill, where `groundHeight` answers 0. It now
+needs level ground, sky and room for a body 1.5 m round the open spot, and may
+pair a bunker floor with the hill beside it. On the other four maps it still
+picks a ground-level pair and passes (exposed enemy hurt 54 to 100, everyone
+else untouched).
+
+**A second round.** Clearing the capstones by the stairs did not end the stuck
+walks. The same overlap rule put nodes over the trench edge on the hill boxes
+too; paths walked along those edges, and the route smoother (which only asks
+that every cell along a line has a surface at the right height) cut straight
+across trench junctions over them. So TRENCHLINE asks for the stricter rule,
+`navCentre`: a nav cell's centre must be over the surface. Players are
+unaffected, since their footing still uses the overlap rule. The 1.4 m bunker
+doorway was then too narrow for the navmesh, so it is now 1.8 m. On every map,
+an up-link (a mantle) is now refused over a pit (`_pitBetween`); on DUSTLINE and
+FOUNDRY the walk is the same with and without it, with the same legs blocked as
+before. And the airstrike test had found a real bug: every bomb exploded at a
+fixed 0.4 m, which on TRENCHLINE is inside the hill (a strike hurt only people
+in the trenches), and on every map it let a roof shelter the people standing on
+it. Bombs now go off on whatever they land on.
+
+**Result.** TRENCHLINE's map walk covers 41 of 41 legs, 100% of the map, with
+nothing blocked. A melee swing through the bunker wall is refused. The airstrike
+hurts the enemy on the hill (100) and spares the one in the observation post,
+the friendly and the caller. The navmesh has 5229 walkable cells (5937 under the
+overlap rule; the difference is the ledge cells over the trenches) and 4655
+links.
+
+The airstrike test's "open ground" rule was then too strict for WHITEOUT, where
+every covered spot is inside a station module and the open spot beside it always
+has a wall 1.5 m to one side. It now asks for the spot itself and at least
+three sides of four to be open, which a trench floor (walled on two opposite
+sides) still fails. On all five maps the strike now hurts the exposed enemy
+(100) and spares the sheltered enemy, the friendly and the caller.
+
+**Deeper, and more tunnels.** The hill now stands 2.1 m above the trench
+floors, 2.4 m to the top of the cap, so a standing player is well hidden. The
+firing steps have two treads (0.45 and 0.9 m): from the top one your eyes clear
+the cap and you can still climb out (1.5 m, inside the 1.55 m mantle). The
+flights have five treads. Bunkers stand on a floor 0.9 m up, with a tread at
+every door, so their slits (0.15 to 0.6 m above the hill) are at eye height
+inside. Roofs sit 2.95 m over the trench floor with their tops 1.1 m above the
+hill, still within a bot's climb. There are four more tunnels: one under the
+hill from each side's centre line to its north line, one from the command
+bunker north and south into the lines, and the first turn of both lines out of
+each yard. A rect that crosses the centre but is not its own mirror (the centre
+tunnel) has its roof built whole, since the mirror of its west half would land
+on the other tunnel. The melee test's wall search now takes any floor up to a
+metre, the same on both sides, because the bunker's dividing wall stands on the
+raised floor.
+
+**Under a hundred files.** The GitHub web uploader takes at most 100 files at
+a time. The project had grown to 103, mostly test screenshots, so the older
+screenshots (and a one-off patch script, `_tex.patch.js`) now live in
+`test-qa-archive`, next to the project folder; `qa/` keeps the two newest sets.
+The project is 62 files without `save/` and `.claude/`. Screenshots named in
+older sections above are in that archive.
+
+**Checked, deeper.** On the deeper map: spawns, line of sight, bots, controls,
+melee (through the bunker's dividing wall, on the raised floor) and blood all
+pass. The airstrike passes on all five maps: on TRENCHLINE the enemy on the hill
+takes 100 and the one in a tunnel nothing. The airstrike test looks for open
+ground up to 3 m, because the hill now stands 2.1 m up. The map walk covers 39
+of 41 legs (95%, nothing unreachable). The two it does not finish both start in
+a trench corner and head for a roof top; the walker is left jumping at the
+corner. Snapping a body to the nearest navmesh node at its own level (it used
+to take the first walkable cell of a spiral, whatever its height) did not
+change them. On the other four maps the walk is exactly as it was: DUSTLINE
+57/66, FOUNDRY 38/39, TIMBERLINE and WHITEOUT complete. Frame time at 1080p is
+22.7 ms on the same laptop, which read 19 to 27 ms on every map that hour.

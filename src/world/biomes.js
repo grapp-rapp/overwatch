@@ -106,6 +106,49 @@ const GEN = {
     else { o.r = 128 + tone * 36 - grime * 40; o.g = 58 + tone * 14 - grime * 20; o.b = 44 + tone * 10 - grime * 14; }
     o.h = mortar ? -0.6 : 0.3 + grime * 0.2; o.rough = 0.9;
   }),
+  /* dry-stone wall: rough limestone blocks fitted without mortar, soil in the
+     gaps. Cellular, on a grid that wraps, so the wall tiles without a seam. */
+  stonewall: () => {
+    const CX = 6, CY = 9, cw = 256 / CX, ch = 256 / CY;
+    const hsh = (i, j, k) => { let h = Math.imul(i, 374761393) ^ Math.imul(j, 668265263) ^ Math.imul(k, 1274126177); h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0) / 4294967296; };
+    return bake(256, 0x57E, (x, y, n, noise, rnd, o) => {
+      const gi = Math.floor(x / cw), gj = Math.floor(y / ch);
+      let d1 = 1e9, d2 = 1e9, id = 0;
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+        const ci = gi + di, cj = gj + dj, wi = ((ci % CX) + CX) % CX, wj = ((cj % CY) + CY) % CY;
+        const dx = (x - (ci + 0.2 + 0.6 * hsh(wi, wj, 1)) * cw) / cw, dy = (y - (cj + 0.2 + 0.6 * hsh(wi, wj, 2)) * ch) / ch;
+        const d = dx * dx + dy * dy;
+        if (d < d1) { d2 = d1; d1 = d; id = wj * CX + wi; } else if (d < d2) d2 = d;
+      }
+      const edge = Math.sqrt(d2) - Math.sqrt(d1), gap = edge < 0.07;
+      const t = hsh(id, 3, 7), grey = hsh(id, 5, 9), grain = fbm(noise, x / 6, y / 6, 3);
+      const lichen = clamp((fbm(noise, x / 40 + 3, y / 40 + 7, 4) - 0.58) * 4, 0, 1);
+      if (gap) { const k = 30 + grain * 26; o.r = k * 1.2; o.g = k; o.b = k * 0.8; o.h = -0.9; o.rough = 0.95; return; }
+      const c = 128 + t * 58 + grain * 26;
+      o.r = c * (1.04 - grey * 0.1); o.g = c * (0.97 - grey * 0.05); o.b = c * (0.82 + grey * 0.1);
+      o.r += (104 - o.r) * lichen * 0.5; o.g += (112 - o.g) * lichen * 0.5; o.b += (80 - o.b) * lichen * 0.5;
+      o.h = Math.sqrt(clamp(edge * 5, 0, 1)) * 0.9 + grain * 0.3; o.rough = 0.88;
+    });
+  },
+  /* the rounded cap along the trench walls: pale lime mortar, pitted and streaked */
+  capstone: () => bake(256, 0xCA9, (x, y, n, noise, rnd, o) => {
+    const u = x / 36, v = y / 36;
+    const base = fbm(noise, u * 2, v * 2, 5), pit = fbm(noise, u * 18, v * 18, 2), streak = fbm(noise, u * 0.7, v * 6, 3);
+    const lich = clamp((fbm(noise, u * 1.4 + 9, v * 1.4 + 4, 4) - 0.6) * 4, 0, 1), hole = pit > 0.72 ? 1 : 0;
+    const c = 172 + base * 42 - hole * 34 - streak * 20;
+    o.r = c + (118 - c) * lich * 0.5; o.g = c * 0.97 + (124 - c * 0.97) * lich * 0.5; o.b = c * 0.88 + (90 - c * 0.88) * lich * 0.5;
+    o.h = base * 0.6 + pit * 0.3 - hole * 0.4; o.rough = 0.86;
+  }),
+  /* the hill: short grass worn through to pale soil and pebbles */
+  hillside: () => bake(256, 0x417, (x, y, n, noise, rnd, o) => {
+    const u = x / 32, v = y / 32;
+    const soil = fbm(noise, u * 2.2, v * 2.2, 5), wear = clamp((fbm(noise, u * 1.1 + 5, v * 1.1 + 8, 4) - 0.48) * 3, 0, 1);
+    const blade = fbm(noise, x / 1.6, y / 5, 2), peb = rnd() > 0.985 ? 1 : 0, gk = (1 - wear) * (0.6 + blade * 0.5);
+    let r = 150 + soil * 40, g = 132 + soil * 34, b = 100 + soil * 26;
+    r += (70 + blade * 40 - r) * gk; g += (104 + blade * 44 - g) * gk; b += (48 + blade * 16 - b) * gk;
+    if (peb) { r = 188; g = 184; b = 172; }
+    o.r = r; o.g = g; o.b = b; o.h = soil * 0.4 + gk * blade * 0.6 + peb * 0.5; o.rough = 0.9;
+  }),
 };
 
 const OPTS = {
@@ -113,6 +156,7 @@ const OPTS = {
   bark: { normalScale: 1.4 }, foliage: {}, pine: {}, logwall: { normalScale: 1.2 },
   rust: { metalness: 0.8, normalScale: 1.1 }, grate: { metalness: 0.9, normalScale: 1.2 },
   brick: { normalScale: 1.2 },
+  stonewall: { normalScale: 1.5 }, capstone: { normalScale: 0.9 }, hillside: { normalScale: 1.0 },
 };
 /* not baked: a surface that is its own light source */
 const SPECIAL = {

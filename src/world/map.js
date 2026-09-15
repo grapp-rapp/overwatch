@@ -27,6 +27,7 @@ const TILE = {
   paintA: 2.0, paintB: 2.0, paintC: 2.0, rubber: 1.0, glass: 2.0,
   drumA: 1.15, drumB: 1.15,
   forest: 6.0, rock: 3.2, snow: 5.0, logwall: 2.4, rust: 2.4, grate: 1.6, brick: 2.2, glow: 2.0,
+  stonewall: 2.4, capstone: 1.4, hillside: 6.0,
 };
 
 /* ---- box geometry with world-scaled UVs ---------------------------------- */
@@ -155,6 +156,21 @@ class MapBuilder {
     this.inst(kind, cx, y, cz, 0, 2 * r, h, 2 * r);
   }
   stack(cx, cz, r, h) { this.round(cx, 0, cz, r, h, 'rust'); this.inst('stack', cx, 0, cz, 0, 2 * r, h, 2 * r); }
+  /** A tank, for the look (props.js 'mbt'): hull and turret stop bodies and bullets
+      and can be climbed; the barrel collides only when it lies along an axis, as an
+      angled one would need a box far bigger than itself. Gun along +x at ry = 0. */
+  mbt(cx, cz, ry = 0, y = 0) {
+    const c = Math.cos(ry), sn = Math.sin(ry);
+    const put = (x0, x1, z0, z1, y0, y1, standable) => {
+      const xs = [], zs = [];
+      for (const [x, z] of [[x0, z0], [x1, z0], [x0, z1], [x1, z1]]) { xs.push(cx + x * c + z * sn); zs.push(cz - x * sn + z * c); }
+      this.add(Math.min(...xs), y + y0, Math.min(...zs), Math.max(...xs), y + y1, Math.max(...zs), 'metal', { vis: false, standable });
+    };
+    put(-3.65, 3.9, -1.8, 1.8, 0, 1.55, true);
+    put(-2.15, 1.6, -1.4, 1.4, 1.55, 2.3, true);
+    if (Math.abs(sn) < 0.05 || Math.abs(c) < 0.05) put(1.6, 5.75, -0.12, 0.12, 1.83, 2.07, false);
+    this.inst('mbt', cx, y, cz, ry);
+  }
   dome(x, y, z, r) { this.inst('dome', x, y, z, 0, 2 * r); }
   /** A horizontal pipe along x or z, centred on (cx, y, cz). */
   pipe(cx, y, cz, len, dia, axis = 'x', solid = true) {
@@ -655,11 +671,15 @@ export class GameMap {
            WHOLE disc looks stricter but is wrong: it silently deletes every
            staircase, because a tread narrower than the agent is never fully
            covering, and the flight becomes invisible to the AI. */
+        /* A map can ask for the stricter rule, the cell's centre over the surface
+           (TRENCHLINE): its whole hill is an edge, and the overlap rule hung nodes
+           over every trench, which paths then walked along and cut across. */
+        const sup = this.def.navCentre ? 0 : SUPPORT_R;
         const cands = [0];
         for (const b of list) {
           if (!b.standable) continue;
-          if (x + SUPPORT_R > b.x0 && x - SUPPORT_R < b.x1 &&
-              z + SUPPORT_R > b.z0 && z - SUPPORT_R < b.z1 && b.y1 > 0.02) cands.push(b.y1);
+          if (x + sup > b.x0 && x - sup < b.x1 &&
+              z + sup > b.z0 && z - sup < b.z1 && b.y1 > 0.02) cands.push(b.y1);
         }
         cands.sort((a, b2) => a - b2);
         let count = 0;
@@ -735,6 +755,7 @@ export class GameMap {
               if (rise <= -STEP_UP && -rise <= MAX_DROP && gap <= MAX_GAP) { ok = true; pen = 1.4 - rise * 2.6; }
               else if (rise >= STEP_UP && rise <= MANTLE_UP && gap <= MAX_GAP_UP) { ok = true; pen = 2.6 + rise * 2.0; }
               if (!ok) continue;
+              if (rise > 0 && this._pitBetween(pa, pb)) continue;   // a mantle cannot cross a pit
 
               /* Clearance test for a ledge move. Tracing straight between the two
                  surfaces would pass through the ledge itself and reject every
@@ -768,6 +789,29 @@ export class GameMap {
     this.linkCount = from.length;
   }
 
+  /* An up-link is a mantle, and a mantle reaches a ledge in front of you: it cannot
+     cross a pit. The surface rule above (any overlap with the agent's footprint)
+     gives a ledge nodes that hang over the drop beside it, and a link to one from
+     across a trench corner is a climb no body can make - TRENCHLINE's map walk
+     stuck on one, from a stair tread over the trench floor. */
+  _pitBetween(lo, hi) {
+    for (const t of [0.33, 0.66]) {
+      const x = lo.x + (hi.x - lo.x) * t, z = lo.z + (hi.z - lo.z) * t;
+      if (this._floorUnder(x, z, hi.y + 0.05, 0.12) < lo.y - 0.3) return true;
+    }
+    return false;
+  }
+  /** Highest standable top at or below maxY under a small disc (0 is the ground). */
+  _floorUnder(x, z, maxY, r) {
+    this.beginQuery();
+    let best = 0;
+    for (const b of this.query(x - r, z - r, x + r, z + r, this._fu || (this._fu = []))) {
+      if (!b.standable || b.y1 > maxY || b.y1 <= best) continue;
+      if (x + r > b.x0 && x - r < b.x1 && z + r > b.z0 && z - r < b.z1) best = b.y1;
+    }
+    return best;
+  }
+
   navIndex(x, z) {
     const i = clamp(Math.floor((x - this.navX0) / NAV_CELL), 0, this.nx - 1);
     const j = clamp(Math.floor((z - this.navZ0) / NAV_CELL), 0, this.nz - 1);
@@ -783,16 +827,23 @@ export class GameMap {
       if (d < bd) { bd = d; best = s; }
     }
     if (best < 0) {
-      // fall back to the closest walkable cell in a small spiral
-      for (let r = 1; r <= 4 && best < 0; r++) {
-        for (let dj = -r; dj <= r && best < 0; dj++) for (let di = -r; di <= r; di++) {
-          const i2 = clamp((c % this.nx) + di, 0, this.nx - 1);
-          const j2 = clamp(Math.floor(c / this.nx) + dj, 0, this.nz - 1);
-          const c2 = j2 * this.nx + i2;
-          if (this.navN[c2] > 0) { return c2 * this.MAXS + 0; }
+      /* The nearest walkable cell within four, at the body's own level if there is one.
+         The first walkable cell of a spiral used to win, whatever its height: in a
+         TRENCHLINE trench corner that was the hill 2.1 m above, through the wall, and
+         the route started up there while the body stood in the trench. */
+      const ci = c % this.nx, cj = Math.floor(c / this.nx);
+      let bc = 1e9, bn = -1;
+      for (let dj = -4; dj <= 4; dj++) for (let di = -4; di <= 4; di++) {
+        const i2 = ci + di, j2 = cj + dj;
+        if (i2 < 0 || j2 < 0 || i2 >= this.nx || j2 >= this.nz) continue;
+        const c2 = j2 * this.nx + i2;
+        for (let s2 = 0; s2 < this.navN[c2]; s2++) {
+          const dy = Math.abs(this.navH[c2 * this.MAXS + s2] - y);
+          const cost = Math.hypot(di, dj) + (dy > 0.6 ? 10 + dy : dy);
+          if (cost < bc) { bc = cost; bn = c2 * this.MAXS + s2; }
         }
       }
-      return -1;
+      return bn;
     }
     return c * this.MAXS + best;
   }
