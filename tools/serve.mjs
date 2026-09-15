@@ -16,6 +16,38 @@ const TYPES = {
 };
 
 http.createServer((req, res) => {
+  /* Profile save: the game mirrors your headshot bank, unlocks and skin here,
+     in save/profile.json, so they outlive the browser's own storage. */
+  if (req.url === '/_save/profile') {
+    const file = path.join(ROOT, 'save', 'profile.json');
+    if (req.method === 'GET') {
+      fs.readFile(file, 'utf8', (err, txt) => {
+        // no save yet is not an error: answer null, and the first save creates it
+        if (err) { res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end('null'); return; }
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(txt);
+      });
+      return;
+    }
+    if (req.method === 'POST') {
+      let body = '';
+      req.setEncoding('utf8');
+      req.on('data', c => { body += c; if (body.length > 16384) req.destroy(); });
+      req.on('end', () => {
+        try {
+          const p = JSON.parse(body);
+          if (!p || typeof p !== 'object' || typeof p.headshots !== 'number') throw new Error('not a profile');
+          const keep = {};
+          for (const k of ['headshots', 'earned', 'unlocked', 'skin', 'hand', 'savedAt']) if (k in p) keep[k] = p[k];
+          fs.mkdirSync(path.dirname(file), { recursive: true });
+          fs.writeFileSync(file, JSON.stringify(keep, null, 2));
+          res.writeHead(200, { 'Content-Type': 'text/plain' }).end('saved');
+        } catch (e) { res.writeHead(400, { 'Content-Type': 'text/plain' }).end(String(e.message)); }
+      });
+      return;
+    }
+    res.writeHead(405).end();
+    return;
+  }
   /* QA screenshot sink: the page POSTs a PNG data URL and we drop it in qa/.
      Only reachable from this local dev server, which is never shipped. */
   if (req.method === 'POST' && req.url.startsWith('/_qa/')) {

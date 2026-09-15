@@ -51,7 +51,7 @@ export const CONTROL_LEGEND = [
   { k: 'G', d: 'Throw lethal (hold to cook)' },
   { k: 'V', d: 'Melee' },
   { k: 'B', d: 'Cycle fire mode' },
-  { k: 'H', d: 'Hold breath (scoped)' },
+  { k: 'SHIFT / H', d: 'Hold breath (scoped)' },
   { grp: 'KILLSTREAKS' },
   { k: '5 / 7', d: 'Call in an earned killstreak' },
   { k: '6', d: 'Team airstrike — one per team, per match' },

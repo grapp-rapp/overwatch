@@ -23,6 +23,8 @@ const EYE_STAND = 1.63, EYE_CROUCH = 1.08;
 const STEP_UP = 0.46;
 const GRAVITY = 21.5;
 const JUMP_V = 6.15;
+/* a ledge between these heights above your feet can be grabbed and climbed */
+const MANTLE_MIN = 0.5, MANTLE_MAX = 1.55;
 const PLAYER_LAYER = 3;
 
 export const STATE = { MENU: 'MENU', LIVE: 'LIVE', KILLCAM: 'KILLCAM', RESULT: 'RESULT', PAUSED: 'PAUSED' };
@@ -47,7 +49,7 @@ class Actor {
     this.grounded = true; this.groundY = 0;
     this.moving = 0;
     this.kills = 0; this.deaths = 0; this.streak = 0; this.bestStreak = 0;
-    this.damageDealt = 0; this.shotsFired = 0; this.shotsHit = 0; this.headshots = 0;
+    this.damageDealt = 0; this.shotsFired = 0; this.shotsHit = 0; this.headshots = 0; this.hsKills = 0;
     this.respawnT = 0;
     this.lastDamage = -99;
     this.lastAttacker = null;
@@ -58,6 +60,7 @@ class Actor {
     this.slot = 'primary';
     this.swapT = 0; this.swapDur = 0; this.swapTo = null;
     this.meleeT = 0; this.meleeDur = MELEE_DUR; this.meleeSeq = 0;
+    this.mantle = null;              // a ledge climb in progress (Game.tryMantle)
     this.char = null;
     this.bot = null;
     this.streakEarned = new Set();
@@ -187,7 +190,7 @@ export class Game {
        the map: wherever a spawn could see the centre it read as "enemy in
        view", and on Timberline, whose road runs straight to it, a bot fled to
        the other team's spawn. Nobody counts until they have been placed. */
-    this.bankedThisMatch = 0;
+    this.bankedThisMatch = 0; this.teamBanked = 0;
     for (const a of this.actors) a.alive = false;
     for (const a of this.actors) this.spawn(a, true);
 
@@ -230,6 +233,7 @@ export class Game {
   /* ================================================================ spawn */
   spawn(a, initial) {
     a.meleeT = 0; a.meleeSeq++;
+    a.mantle = null;
     const enemies = this.actors.filter(o => o.team !== a.team);
     const friends = this.actors.filter(o => o.team === a.team && o !== a);
     const s = this.map.pickSpawn(a.team, enemies, friends);
@@ -368,6 +372,9 @@ export class Game {
       if (I.lethal && a.lethalCount > 0 && a.bot.hasLastKnown) this.throwLethal(a, a.bot.lastKnown);
     }
 
+    /* climbing onto a ledge: both hands are busy */
+    if (a.mantle) { fireDown = firePressed = wantAds = wantSprint = wantReload = jump = false; }
+
     /* --- stance blending --- */
     const canStand = this.headroom(a, HEIGHT_STAND);
     a.crouch = damp(a.crouch, (wantCrouch || !canStand) ? 1 : 0, 12, dt);
@@ -385,7 +392,11 @@ export class Game {
     else if (a.adsW > 0.05) speed = lerp(base, W.def.adsSpeed, a.adsW);
     speed *= lerp(1, 0.56, a.crouch);
     if (!a.grounded) speed *= 1.0;
-    this.moveActor(a, dt, mx, mz, speed, jump);
+    if (a.mantle) this.updateMantle(a, dt);
+    else {
+      this.moveActor(a, dt, mx, mz, speed, jump);
+      if (a.isLocal && !a.grounded && (mx || mz)) this.tryMantle(a, mx, mz);
+    }
     a.moving = clamp(Math.hypot(a.vel.x, a.vel.z) / Math.max(0.1, base), 0, 1.6);
 
     /* --- weapon --- */
@@ -513,8 +524,83 @@ export class Game {
     }
 
     /* --- keep inside the arena, always --- */
-    a.pos.x = clamp(a.pos.x, -31 + RADIUS, 31 - RADIUS);
-    a.pos.z = clamp(a.pos.z, -23 + RADIUS, 23 - RADIUS);
+    const hw = this.map.halfW, hd = this.map.halfD;     // this map's size, not DUSTLINE's
+    a.pos.x = clamp(a.pos.x, -hw + RADIUS, hw - RADIUS);
+    a.pos.z = clamp(a.pos.z, -hd + RADIUS, hd - RADIUS);
+  }
+
+  /* ---------------------------------------------------------------- mantle */
+  /**
+   * In the air and pushing into a ledge too high to land on: grab it and pull
+   * yourself up. The ledge must be MANTLE_MIN-MANTLE_MAX above your feet, a
+   * surface you can stand on (the same ones the navmesh stands on), at least
+   * half a metre deep, with room above you on the way up and where you end.
+   */
+  tryMantle(a, mx, mz) {
+    const len = Math.hypot(mx, mz);
+    if (len < 0.5 || this.state !== STATE.LIVE) return false;
+    const fx = mx / len, fz = mz / len, feet = a.pos.y, x = a.pos.x, z = a.pos.z;
+    const top = this.groundHeight(x + fx * (RADIUS + 0.22), z + fz * (RADIUS + 0.22), feet + MANTLE_MAX, 0.08);
+    const rise = top - feet;
+    if (rise < MANTLE_MIN || rise > MANTLE_MAX) return false;
+    if (Math.abs(this.groundHeight(x + fx * (RADIUS + 0.62), z + fz * (RADIUS + 0.62), top + 0.05, 0.08) - top) > 0.04) return false;
+    const x1 = x + fx * (RADIUS + 0.5), z1 = z + fz * (RADIUS + 0.5);
+    if (Math.abs(x1) > this.map.halfW - RADIUS || Math.abs(z1) > this.map.halfD - RADIUS) return false;
+    const ceil = this.ceilingHeight(x, z, feet, RADIUS, top + HEIGHT_CROUCH);
+    if (ceil !== null && ceil < top + HEIGHT_CROUCH) return false;
+    if (!this.spaceFree(x1, z1, top + 0.03, top + HEIGHT_CROUCH, RADIUS)) return false;
+    if (!this.spaceFree((x + x1) / 2, (z + z1) / 2, top + 0.03, top + HEIGHT_CROUCH, RADIUS)) return false;
+    /* the hand goes on the lip, just past the face and left of centre */
+    const hit = this.map.raycast(x, top - 0.05, z, fx, 0, fz, RADIUS + 0.5, this._mh || (this._mh = {}));
+    const face = hit ? hit.t : RADIUS + 0.22;
+    a.mantle = { t: 0, T: 0.55 + 0.25 * rise / MANTLE_MAX, x0: x, z0: z, y0: feet, x1, z1, top, fx, fz,
+      gx: x + fx * (face + 0.07) + fz * 0.17, gz: z + fz * (face + 0.07) - fx * 0.17 };
+    a.vel.set(0, 0, 0);
+    if (a.isLocal) { this.camShake = Math.max(this.camShake, 0.3); this.audio.play('step_dirt', { vol: 0.5 }); }
+    return true;
+  }
+
+  /** Grab, pull up, then over the lip; you land standing (or crouched, under a
+   *  low roof). The first version was up almost at once, which put the lip -
+   *  and the hand on it - below the bottom of the screen before you saw it. */
+  updateMantle(a, dt) {
+    const M = a.mantle, sm = (v) => v * v * (3 - 2 * v);
+    M.t += dt;
+    const k = Math.min(1, M.t / M.T);
+    const up = sm(clamp((k - 0.08) / 0.62, 0, 1)), over = sm(clamp((k - 0.58) / 0.42, 0, 1));
+    a.pos.set(M.x0 + (M.x1 - M.x0) * over, M.y0 + (M.top + 0.01 - M.y0) * up, M.z0 + (M.z1 - M.z0) * over);
+    a.vel.set(0, 0, 0); a.grounded = false; a.groundY = M.top;
+    if (k < 1) return;
+    a.mantle = null;
+    a.pos.set(M.x1, M.top, M.z1); a.grounded = true;
+    a.vel.x = M.fx * 1.2; a.vel.z = M.fz * 1.2;          // step off the pull with a little way on
+    if (a.isLocal) { this.viewmodel.landing = 0.3; this.audio.play('step_dirt', { vol: 0.35 }); }
+  }
+
+  /** While you pull yourself up the view dips to keep the lip, and your hand on
+   *  it, about 25 degrees under the crosshair. A fixed dip was not enough: from
+   *  a running jump you reach the wall near the top of the jump, eyes already
+   *  well above the lip, and the hand sat below the bottom of the screen. */
+  mantleDip(a) {
+    const M = a.mantle;
+    if (!M) return 0;
+    const k = Math.min(1, M.t / M.T), sm = (v) => v * v * (3 - 2 * v);
+    const down = Math.atan2(a.pos.y + a.eyeY - M.top, Math.hypot(M.gx - a.pos.x, M.gz - a.pos.z));
+    return -clamp(down + a.pitch - 0.44, 0, 0.9) * sm(clamp(k / 0.2, 0, 1)) * (1 - sm(clamp((k - 0.72) / 0.28, 0, 1)));
+  }
+
+  /** No solid box inside a cylinder of radius r between heights y0 and y1. */
+  spaceFree(x, z, y0, y1, r) {
+    const m = this.map;
+    m.beginQuery();
+    const list = m.query(x - r, z - r, x + r, z + r, this._sf || (this._sf = []));
+    for (let i = 0; i < list.length; i++) {
+      const b = list[i];
+      if (b.solid === false || b.y1 <= y0 || b.y0 >= y1) continue;
+      if (x + r <= b.x0 || x - r >= b.x1 || z + r <= b.z0 || z - r >= b.z1) continue;
+      return false;
+    }
+    return true;
   }
 
   sweep(a, axis, delta, r, y0, y1) {
@@ -591,7 +677,7 @@ export class Game {
     const yaw = a.yaw + W.shotYaw;
     let pitch = a.pitch + W.shotPitch;
     if (a.isLocal && def.sway && a.adsW > 0.6) {
-      const s = this.swayOffset(W, a.adsW);
+      const s = this.swayOffset(W, a.adsW, a.crouch > 0.5);
       pitch += s.y; // sway already folded into the aim for the local player
     }
     const cy = Math.cos(yaw), sy = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
@@ -658,11 +744,14 @@ export class Game {
 
     /* damage */
     let anyHit = false, anyHead = false, anyKill = false;
+    /* a shotgun blast is one shot: if any pellet took the head, the kill is a
+       headshot kill, whichever pellet happened to land the last point */
+    const headOn = hits.some(h => h.target && h.headshot) ? new Set(hits.filter(h => h.target && h.headshot).map(h => h.target)) : null;
     for (const h of hits) {
       if (!h.target) continue;
       anyHit = true;
       if (h.headshot) anyHead = true;
-      const died = this.applyDamage(h.target, h.damage, a, def.name, h.headshot,
+      const died = this.applyDamage(h.target, h.damage, a, def.name, h.headshot || (!!headOn && headOn.has(h.target)),
         this._v2.set(h.dirX, h.dirY, h.dirZ), h.zone);
       if (died) anyKill = true;
     }
@@ -677,14 +766,20 @@ export class Game {
     }
   }
 
-  swayOffset(W, adsW) {
+  /* Scope sway: a slow, uneven drift, two sines per axis at unrelated rates
+     so it never retraces one loop. It was one sine per axis at 1.35 degrees,
+     and at 8x that drew the same big circle over and over. Holding your
+     breath settles it within a few frames; running out makes it worse until
+     you have your breath back. Crouching steadies it too. */
+  swayOffset(W, adsW, crouched = false) {
     const s = W.def.sway;
     if (!s) return { x: 0, y: 0 };
-    const t = W.swayT;
-    const amp = s.amp * (Math.PI / 180) * adsW * lerp(0.06, 1, W.breath);
+    const w = W.swayT * s.freq * 2 * Math.PI, still = W.steady || 0;
+    const winded = 1 + 0.8 * (1 - W.breath) * (1 - still);
+    const amp = s.amp * (Math.PI / 180) * adsW * (1 - 0.94 * still) * winded * (crouched ? 0.65 : 1);
     return {
-      x: Math.sin(t * s.freq * 2 * Math.PI * 0.61) * amp * 1.15,
-      y: Math.sin(t * s.freq * 2 * Math.PI * 0.43 + 1.1) * amp * 0.72,
+      x: (Math.sin(w * 0.37) * 0.7 + Math.sin(w * 0.83 + 0.4) * 0.3) * amp * 1.1,
+      y: (Math.sin(w * 0.29 + 1.1) * 0.7 + Math.sin(w * 0.71 + 2.3) * 0.3) * amp * 0.8,
     };
   }
 
@@ -714,6 +809,7 @@ export class Game {
   killActor(victim, killer, weaponName, headshot, dir) {
     victim.alive = false;
     victim.health = 0;
+    victim.mantle = null;
     victim.deaths++;
     victim.streak = 0;
     victim.respawnT = victim.isLocal ? 99 : this.rng.range(3.0, 5.5);
@@ -745,20 +841,30 @@ export class Game {
       if (victim.team === 'A') this.scoreB++; else this.scoreA++;
     }
 
+    /* Every headshot kill on your side banks one headshot, the currency skins
+       are bought with: yours and your teammates'. Only yours used to count,
+       while the kill feed marked everyone's HS and the result screen counted
+       head hits, so the game kept showing headshots that never reached the bank. */
+    const you = this.me;
+    const banks = !!(headshot && killer && you && killer !== victim && killer.team === you.team && victim.team !== killer.team);
+    let bank = 0;
+    if (banks) {
+      bank = awardHeadshot();
+      this.bankedThisMatch = (this.bankedThisMatch || 0) + 1;
+      if (killer !== you) this.teamBanked = (this.teamBanked || 0) + 1;
+    }
+    if (headshot && killer && killer !== victim) killer.hsKills = (killer.hsKills || 0) + 1;
+
     this.hud.addKill(killer ? killer.name : 'WORLD', killer ? killer.team : victim.team,
       victim.name, victim.team, weaponName, headshot,
-      killer === this.me || victim === this.me);
+      killer === this.me || victim === this.me, banks);
 
     if (victim.isLocal) {
       this.hud.banner('YOU WERE KILLED BY', killer ? killer.name : 'THE WORLD', true);
       this.startKillcam(killer, weaponName);
     } else if (killer === this.me) {
-      // every headshot kill banks one headshot: the currency skins are bought with
-      if (headshot) {
-        const bank = awardHeadshot();
-        this.bankedThisMatch = (this.bankedThisMatch || 0) + 1;
-        this.hud.banner('HEADSHOT', victim.name + '  ·  +1 BANKED (' + bank + ')', false);
-      } else this.hud.banner('ELIMINATED', victim.name, false);
+      if (headshot) this.hud.banner('HEADSHOT', victim.name + '  ·  +1 BANKED (' + bank + ')', false);
+      else this.hud.banner('ELIMINATED', victim.name, false);
     }
 
     if (this.scoreA >= this.scoreLimit || this.scoreB >= this.scoreLimit) this.endMatch();
@@ -928,11 +1034,12 @@ export class Game {
     }
 
     /* melee */
-    if (I.hit('melee') && a.meleeT <= 0 && a.swapT <= 0 && !a.cooking) this.startMelee(a);
+    if (I.hit('melee') && a.meleeT <= 0 && a.swapT <= 0 && !a.cooking && !a.mantle) this.startMelee(a);
     if (a.meleeT > 0) a.meleeT = Math.max(0, a.meleeT - dt);
 
     /* hold breath */
-    W.holdingBreath = I.down('hold') && a.adsW > 0.6 && !!W.def.sway;
+    // Shift, as in most shooters (you cannot sprint while aiming anyway), or H
+    W.holdingBreath = (I.down('sprint') || I.down('hold')) && a.adsW > 0.6 && !!W.def.sway;
 
     /* the team airstrike — not a streak, so it has its own key and its own
        availability rule: your side simply has not spent it yet */
@@ -1079,7 +1186,7 @@ export class Game {
     /* sway (scoped weapons) folded into the view */
     let swayX = 0, swayY = 0;
     if (W.def.sway && a.adsW > 0.05) {
-      const s = this.swayOffset(W, a.adsW);
+      const s = this.swayOffset(W, a.adsW, a.crouch > 0.5);
       swayX = s.x; swayY = s.y;
     }
 
@@ -1101,7 +1208,7 @@ export class Game {
     this.camRoll = damp(this.camRoll || 0, rollTarget, 7, dt);
 
     this._e.set(
-      a.pitch + W.recoilPitch + kickP + swayY + shY,
+      a.pitch + W.recoilPitch + kickP + swayY + shY + this.mantleDip(a),
       a.yaw + W.recoilYaw + kickY + swayX + shX + Math.PI,
       this.camRoll + Math.sin(this.camShakeT * 1.3) * sh * 0.02,
       'YXZ');
@@ -1331,9 +1438,9 @@ export class Game {
     document.getElementById('resStats').innerHTML = [
       ['KILLS', me.kills], ['DEATHS', me.deaths],
       ['K/D', me.deaths ? (me.kills / me.deaths).toFixed(2) : me.kills.toFixed(2)],
-      ['ACCURACY', acc.toFixed(0) + '%'], ['HEADSHOTS', me.headshots],
+      ['ACCURACY', acc.toFixed(0) + '%'], ['HEADSHOT KILLS', me.hsKills || 0],
       ['BEST STREAK', me.bestStreak], ['DAMAGE', Math.round(me.damageDealt)],
-      ['HEADSHOT BANK', '+' + (this.bankedThisMatch || 0) + ' → ' + loadProfile().headshots],
+      ['HEADSHOT BANK · TEAM +' + (this.teamBanked || 0), '+' + (this.bankedThisMatch || 0) + ' → ' + loadProfile().headshots],
     ].map(([k, v]) => `<div><div class="rv">${v}</div><div class="rk">${k}</div></div>`).join('');
     el.classList.remove('hidden');
     if (this.ambienceLoop) { this.audio.stopLoop(this.ambienceLoop); this.ambienceLoop = null; }

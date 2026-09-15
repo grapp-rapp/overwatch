@@ -26,6 +26,32 @@ function tileNoise(seed, P) {
 }
 const fbm = (n, x, y, oct) => { let a = 0, amp = 0.5, f = 1, t = 0; for (let o = 0; o < oct; o++) { a += n(x * f, y * f) * amp; t += amp; amp *= 0.5; f *= 2; } return a / t; };
 const rgb = (h) => [(h >> 16) & 255, (h >> 8) & 255, h & 255];
+/* tileable cells: K x K jittered points on a torus. (x, y) in [0, K) ->
+   [nearest distance, second-nearest distance, a random id in [0,1) for the nearest] */
+function tileCells(seed, K) {
+  let s = (seed * 2654435761) >>> 0;
+  const r = () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296;
+  const pts = [];
+  for (let j = 0; j < K; j++) for (let i = 0; i < K; i++) pts.push([i + 0.1 + r() * 0.8, j + 0.1 + r() * 0.8, r()]);
+  const out = [0, 0, 0];
+  return (x, y) => {
+    let d1 = 9, d2 = 9, id = 0;
+    const ci = Math.floor(x), cj = Math.floor(y);
+    for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+      const ii = ci + di, jj = cj + dj, wi = ((ii % K) + K) % K, wj = ((jj % K) + K) % K, p = pts[wj * K + wi];
+      const d = Math.hypot(x - (p[0] + ii - wi), y - (p[1] + jj - wj));
+      if (d < d1) { d2 = d1; d1 = d; id = p[2]; } else if (d < d2) d2 = d;
+    }
+    out[0] = d1; out[1] = d2; out[2] = id;
+    return out;
+  };
+}
+const hash2 = (a, b, seed) => {
+  let h = (a * 374761393 + b * 668265263 + seed * 144269) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+};
+const mixc = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 
 /* each returns (x, y) in [0,1) -> [r, g, b]; the brightest colours glow on skins with `glow` */
 const PAT = {
@@ -71,6 +97,83 @@ const PAT = {
       if (Math.min(fx, 1 - fx, fy, 1 - fy) >= 0.05) return a;
       return fbm(n, x * 4, y * 4, 2) > 0.5 ? c1 : c2; };
   },
+  spots(o) {         // rosettes: a dark ring round a lighter heart, on a base
+    const P = o.pal.map(rgb), K = o.cells || 6, c = tileCells(o.seed, K), n = tileNoise(o.seed + 3, 4);
+    return (x, y) => {
+      const w = (fbm(n, x * 4, y * 4, 3) - 0.5) * 0.5, d = c(x * K + w, y * K + w)[0];
+      return d < 0.2 ? P[2] : d < 0.32 ? P[1] : P[0];
+    };
+  },
+  hex(o) {           // hexagon plates, each its own shade, with a dark seam
+    const P = o.pal.map(rgb), S3 = Math.sqrt(3);
+    return (x, y) => {
+      const u = x * 6 * S3, v = y * 12;              // 6 plates across, 8 rows down: repeats exactly
+      const q = S3 / 3 * u - v / 3, r = 2 / 3 * v, yq = -q - r;
+      let cx = Math.round(q), cy = Math.round(yq), cz = Math.round(r);
+      const dx = Math.abs(cx - q), dy = Math.abs(cy - yq), dz = Math.abs(cz - r);
+      if (dx > dy && dx > dz) cx = -cy - cz; else if (dy <= dz) cz = -cx - cy;
+      const lu = Math.abs(u - S3 * (cx + cz / 2)), lv = Math.abs(v - 1.5 * cz);
+      const e = Math.max(lu, 0.5 * lu + 0.866 * lv) / 0.866;
+      const col = cx + Math.floor(cz / 2), id = hash2(((col % 6) + 6) % 6, ((cz % 8) + 8) % 8, o.seed);
+      const base = P[Math.floor(id * P.length) % P.length];
+      return e > 0.9 ? mixc(base, [8, 8, 10], 0.75) : mixc(base, [255, 255, 255], (0.9 - e) * 0.2);
+    };
+  },
+  marble(o) {        // polished stone: soft clouds cut by dark veins
+    const P = o.pal.map(rgb), n = tileNoise(o.seed, 4), m = tileNoise(o.seed + 9, 8);
+    return (x, y) => {
+      const t = fbm(n, x * 4, y * 4, 5), v = Math.abs(Math.sin((x * 2 + y * 3 + t * 3.2) * Math.PI));
+      const base = mixc(P[0], P[1], fbm(m, x * 8, y * 8, 3));
+      return v < 0.07 ? mixc(P[2], base, v / 0.07 * 0.5) : base;
+    };
+  },
+  circuit(o) {       // a circuit board: traces between pads on a grid
+    const P = o.pal.map(rgb), K = 10, w = 0.07;
+    const on = (i, j, k) => hash2(((i % K) + K) % K, ((j % K) + K) % K, o.seed + k) > 0.48;
+    return (x, y) => {
+      const gx = x * K, gy = y * K, i = Math.floor(gx), j = Math.floor(gy), fx = gx - i - 0.5, fy = gy - j - 0.5;
+      const h = hash2(i, j, o.seed);
+      if (h > 0.72 && Math.hypot(fx, fy) < 0.16) return Math.hypot(fx, fy) < 0.08 ? P[0] : P[2];
+      const t = (on(i, j, 1) && fx > -w && Math.abs(fy) < w) || (on(i - 1, j, 1) && fx < w && Math.abs(fy) < w) ||
+                (on(i, j, 2) && fy > -w && Math.abs(fx) < w) || (on(i, j - 1, 2) && fy < w && Math.abs(fx) < w);
+      return t ? P[1] : mixc(P[0], P[3] || P[0], h * 0.3);
+    };
+  },
+  damascus(o) {      // folded steel: rippling layers
+    const P = o.pal.map(rgb), n = tileNoise(o.seed, 4);
+    return (x, y) => {
+      const t = y * 14 + fbm(n, x * 4, y * 4, 4) * 5 + Math.sin(x * Math.PI * 4) * 0.8;
+      const b = 0.5 + 0.5 * Math.sin(t * Math.PI * 2);
+      return mixc(P[0], P[1], b * b * (3 - 2 * b));
+    };
+  },
+  shard(o) {         // crystal: flat facets, each its own colour, bright where they meet
+    const P = o.pal.map(rgb), K = o.cells || 5, c = tileCells(o.seed, K);
+    return (x, y) => {
+      const q = c(x * K, y * K), d1 = q[0], edge = q[1] - q[0], id = q[2];
+      if (edge < 0.035) return P[P.length - 1];
+      return mixc(P[Math.floor(id * (P.length - 1))], [255, 255, 255], 0.12 + id * 0.1 - d1 * 0.15);
+    };
+  },
+  nebula(o) {        // deep space: gas clouds and stars
+    const P = o.pal.map(rgb), n1 = tileNoise(o.seed, 4), n2 = tileNoise(o.seed + 5, 8), K = 40;
+    const star = mixc(P[3] || [255, 255, 255], [255, 255, 255], 0.5);
+    return (x, y) => {
+      const a = fbm(n1, x * 4, y * 4, 5), b = fbm(n2, x * 8 + 3, y * 8 + 1, 4);
+      let c = mixc(P[0], P[1], Math.min(1, Math.max(0, a - 0.35) * 2.2));
+      c = mixc(c, P[2], Math.min(1, Math.max(0, b - 0.52) * 3.2));
+      const gx = x * K, gy = y * K, i = Math.floor(gx), j = Math.floor(gy);
+      if (hash2(i, j, o.seed) > 0.93 && Math.hypot(gx - i - hash2(i, j, o.seed + 3), gy - j - hash2(i, j, o.seed + 4)) < 0.12) return star;
+      return c;
+    };
+  },
+  aurora(o) {        // curtains of light
+    const P = o.pal.map(rgb), n = tileNoise(o.seed, 4);
+    return (x, y) => {
+      const w = fbm(n, x * 4, y * 4, 4), v = Math.sin((y * 3 + w * 1.6) * Math.PI * 2), k = Math.max(0, v) ** 3;
+      return mixc(P[0], mixc(P[1], P[2], 0.5 + 0.5 * Math.sin(x * Math.PI * 4 + w * 3)), k);
+    };
+  },
   brushed(o) {       // brushed metal: fine streaks along one axis, for chrome and gold
     const n = tileNoise(o.seed, 4);
     return (x, y) => { const v = 205 + n(x * 4, y * 64) * 50; return [v, v, v]; };
@@ -114,7 +217,12 @@ export function studioEnv() {
   return ENV;
 }
 
-/** A copy of `base` wearing `skin`: the pattern projected at `scale` repeats per object unit. */
+/* one clock for every animated skin; main.js advances it every frame */
+export const camoClock = { value: 0 };
+
+/** A copy of `base` wearing `skin`: the pattern projected at `scale` repeats per
+    object unit. look.flow drifts it (pattern units a second), look.pulse throbs
+    its glow, look.hue turns its colours (radians a second). */
 export function withCamo(base, skin, scale) {
   const m = base.clone(), L = skin.look || {};
   if (L.color !== undefined) m.color = new THREE.Color(L.color);
@@ -123,21 +231,63 @@ export function withCamo(base, skin, scale) {
   if (L.env) { m.envMap = studioEnv(); m.envMapIntensity = L.env; }
   const tex = camoTexture(skin);
   if (!tex) return m;
-  const uni = { uCamo: { value: tex }, uCamoScale: { value: scale }, uCamoGlow: { value: L.glow || 0 }, uCamoGain: { value: L.norm ? Math.min(6, Math.max(1, L.norm / (tex.userData.meanLum || 0.2))) : (L.gain || 1) } };
+  const fl = L.flow || [0, 0, 0];
+  const uni = {
+    uCamo: { value: tex }, uCamoScale: { value: scale }, uCamoGlow: { value: L.glow || 0 },
+    uCamoGain: { value: L.norm ? Math.min(6, Math.max(1, L.norm / (tex.userData.meanLum || 0.2))) : (L.gain || 1) },
+    uCamoTime: camoClock, uCamoFlow: { value: new THREE.Vector3(fl[0], fl[1], fl[2]) },
+    uCamoPulse: { value: L.pulse || 0 }, uCamoHue: { value: L.hue || 0 },
+  };
   m.userData.camoUniforms = uni;
   m.onBeforeCompile = (sh) => {
     Object.assign(sh.uniforms, uni);
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vCamoP;\nvarying vec3 vCamoN;\nuniform float uCamoScale;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvCamoP = position * uCamoScale;\nvCamoN = normal;');
+      .replace('#include <common>', `#include <common>
+varying vec3 vCamoP;
+varying vec3 vCamoN;
+uniform float uCamoScale;`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+vCamoP = position * uCamoScale;
+vCamoN = normal;`);
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vCamoP;\nvarying vec3 vCamoN;\nuniform sampler2D uCamo;\nuniform float uCamoGlow; uniform float uCamoGain;\nvec3 camoCol;')
-      .replace('#include <map_fragment>', '#include <map_fragment>\nvec3 cw = pow(abs(normalize(vCamoN)), vec3(4.0)); cw /= (cw.x + cw.y + cw.z);\n' +
-        'camoCol = texture2D(uCamo, vCamoP.yz).rgb * cw.x + texture2D(uCamo, vCamoP.xz).rgb * cw.y + texture2D(uCamo, vCamoP.xy).rgb * cw.z;\n' +
-        'diffuseColor.rgb *= camoCol * uCamoGain;')
-      .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n' +
-        'totalEmissiveRadiance += camoCol * smoothstep(0.6, 0.9, max(camoCol.r, max(camoCol.g, camoCol.b))) * uCamoGlow;');
+      .replace('#include <common>', `#include <common>
+varying vec3 vCamoP;
+varying vec3 vCamoN;
+uniform sampler2D uCamo;
+uniform float uCamoGlow, uCamoGain, uCamoTime, uCamoPulse, uCamoHue;
+uniform vec3 uCamoFlow;
+vec3 camoCol;
+vec3 camoHue(vec3 c, float a) {
+  vec3 yiq = mat3(0.299, 0.596, 0.211, 0.587, -0.274, -0.523, 0.114, -0.322, 0.312) * c;
+  float h = atan(yiq.z, yiq.y) + a, ch = length(yiq.yz);
+  return mat3(1.0, 1.0, 1.0, 0.956, -0.272, -1.106, 0.621, -0.647, 1.703) * vec3(yiq.x, ch * cos(h), ch * sin(h));
+}`)
+      .replace('#include <map_fragment>', `#include <map_fragment>
+vec3 cw = pow(abs(normalize(vCamoN)), vec3(4.0)); cw /= (cw.x + cw.y + cw.z);
+vec3 cp = vCamoP + uCamoFlow * uCamoTime;
+camoCol = texture2D(uCamo, cp.yz).rgb * cw.x + texture2D(uCamo, cp.xz).rgb * cw.y + texture2D(uCamo, cp.xy).rgb * cw.z;
+if (uCamoHue != 0.0) camoCol = max(camoHue(camoCol, uCamoTime * uCamoHue), vec3(0.0));
+diffuseColor.rgb *= camoCol * uCamoGain;`)
+      .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+totalEmissiveRadiance += camoCol * smoothstep(0.6, 0.9, max(camoCol.r, max(camoCol.g, camoCol.b))) * uCamoGlow * (1.0 + uCamoPulse * sin(uCamoTime * 2.4));`);
   };
-  m.customProgramCacheKey = () => 'camo-v1';
+  m.customProgramCacheKey = () => 'camo-v2';
   return m;
+}
+
+/** A card's swatch: the pattern itself at low resolution, straight into a
+    canvas - no texture, so hundreds of cards cost a few milliseconds each. */
+export function drawCamoThumb(skin, cv) {
+  const ctx = cv.getContext('2d'), W = cv.width, H = cv.height;
+  if (!skin.camo) { ctx.fillStyle = skin.swatch || '#333'; ctx.fillRect(0, 0, W, H); return; }
+  const sw = 72, sh = Math.max(8, Math.round(sw * H / W)), f = PAT[skin.camo.pat](skin.camo);
+  const tmp = document.createElement('canvas'); tmp.width = sw; tmp.height = sh;
+  const tc = tmp.getContext('2d'), img = tc.createImageData(sw, sh), d = img.data, k = 1.5 / sw;
+  for (let y = 0; y < sh; y++) for (let x = 0; x < sw; x++) {
+    const c = f((x * k) % 1, (y * k) % 1), o = (y * sw + x) * 4;
+    d[o] = c[0]; d[o + 1] = c[1]; d[o + 2] = c[2]; d[o + 3] = 255;
+  }
+  tc.putImageData(img, 0, 0);
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(tmp, 0, 0, W, H);
 }

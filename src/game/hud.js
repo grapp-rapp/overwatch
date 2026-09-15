@@ -26,7 +26,7 @@ export class HUD {
       stance: $('stance'), armor: $('armor'),
       wName: $('wName'), wMag: $('wMag'), wRes: $('wRes'), wFire: $('wFire'), wLethal: $('wLethal'),
       streakRail: $('streakRail'), dmgDirs: $('dmgDirs'), hurtVig: $('hurtVig'), lowHp: $('lowHp'),
-      scope: $('scope'), scopeSvg: $('scopeSvg'), banner: $('banner'), toast: $('streakToast'),
+      scope: $('scope'), scopeSvg: $('scopeSvg'), adsRet: $('adsRetSvg'), banner: $('banner'), toast: $('streakToast'),
       scoreboard: $('scoreboard'), killcam: $('killcam'), kcKiller: $('kcKiller'),
       kcWep: $('kcWep'), kcCount: $('kcCount'), fps: $('fps'),
       strikeSel: $('strikeSel'), strikeCv: $('strikeCv'), ssTitle: $('ssTitle'),
@@ -121,8 +121,10 @@ export class HUD {
       </g>
       <text x="500" y="905" text-anchor="middle" fill="#3d4a42" font-size="18"
         font-family="monospace" letter-spacing="4">8x</text>
-      <g id="scopeBreath" opacity="0"><text x="500" y="150" text-anchor="middle" fill="#7ee787"
-        font-size="17" font-family="monospace" letter-spacing="3">HOLD</text></g>`;
+      <g id="scopeBreath" opacity="0"><text x="500" y="248" text-anchor="middle" fill="#7ee787"
+        font-size="17" font-family="monospace" letter-spacing="3">HOLD</text></g>
+      <g id="scopeHint" opacity="0"><text x="500" y="764" text-anchor="middle" fill="#b9c9bd"
+        font-size="15" font-family="monospace" letter-spacing="3">SHIFT · HOLD BREATH</text></g>`;
     // mil-dot ladder below centre for holdover
     const dots = s.querySelector('#milDots');
     for (let i = 1; i <= 5; i++) {
@@ -138,6 +140,7 @@ export class HUD {
       }
     }
     this.scopeBreath = s.querySelector('#scopeBreath');
+    this.scopeHint = s.querySelector('#scopeHint');
   }
 
   /* ---------------------------------------------------------------- reticle */
@@ -179,12 +182,30 @@ export class HUD {
       }
       if (kind === 'dot' || kind === 'holo') mk('circle', { class: 'rdot', cx: 0, cy: 0, r: 1.6 });
     }
+    /* what you see through the sight once you are aiming: the red dot, the holo
+       ring, the ACOG chevron. Iron sights have their front post, the 8x its overlay. */
+    const A = this.el.adsRet;
+    if (A) {
+      A.innerHTML = '';
+      const add = (tag, attrs) => { const e = document.createElementNS(SVGNS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); A.appendChild(e); };
+      if (kind === 'dot') add('circle', { class: 'ad', cx: 0, cy: 0, r: 2.3 });   // 1.5 vanished against a target
+      if (kind === 'holo') {
+        add('circle', { class: 'ar', cx: 0, cy: 0, r: 13 }); add('circle', { class: 'ad', cx: 0, cy: 0, r: 1.2 });
+        for (const [x1, y1, x2, y2] of [[0, -13, 0, -17], [0, 13, 0, 17], [-13, 0, -17, 0], [13, 0, 17, 0]]) add('line', { class: 'ar', x1, y1, x2, y2 });
+      }
+      if (kind === 'acog') { add('path', { class: 'ac', d: 'M -6 6 L 0 0 L 6 6' }); add('line', { class: 'ar', x1: 0, y1: 8, x2: 0, y2: 22 }); }
+    }
     this.retDotEl = r.querySelector('.rdot');
   }
 
   /** @param spreadPx radius in reticle units (viewBox -50..50 spans 120 px) */
   updateReticle(spreadPx, adsW, visible, hitTeam) {
-    this.el.reticle.parentElement.style.opacity = visible ? (1 - adsW * 0.75) : 0;
+    // aiming hands over to the sight: the hip cross fades out (the shotgun keeps a ghost of its spread)
+    this.el.reticle.parentElement.style.opacity = visible ? (1 - adsW * (this._reticleKind === 'shotgun' ? 0.75 : 1)) : 0;
+    if (this.el.adsRet) {
+      const k = Math.min(1, Math.max(0, (adsW - 0.6) / 0.35));
+      this.el.adsRet.parentElement.style.opacity = visible ? k * k * (3 - 2 * k) : 0;
+    }
     for (const l of this.retLines) {
       const g = spreadPx;
       l.el.setAttribute('x1', l.ax * g);
@@ -265,7 +286,7 @@ export class HUD {
   }
 
   /* ---------------------------------------------------------------- killfeed */
-  addKill(killerName, killerTeam, victimName, victimTeam, weaponName, headshot, mine) {
+  addKill(killerName, killerTeam, victimName, victimTeam, weaponName, headshot, mine, banked) {
     const d = document.createElement('div');
     d.className = 'kf' + (mine ? ' mine' : '');
     const kc = killerTeam === 'A' ? 'a' : 'b';
@@ -273,7 +294,7 @@ export class HUD {
     d.innerHTML = `<span class="n ${kc}">${killerName}</span>`
       + `<svg class="wi" viewBox="0 0 40 14" fill="none" stroke="#c9d6d1" stroke-width="1.3">
            <path d="M3 8h20l3-3h9M8 8v3M23 5v3M14 8v2"/></svg>`
-      + (headshot ? '<span class="hs">HS</span>' : '')
+      + (headshot ? '<span class="hs">HS' + (banked ? ' <b>+1</b>' : '') + '</span>' : '')   // +1: it went into your bank
       + `<span class="n ${vc}">${victimName}</span>`;
     this.el.killfeed.appendChild(d);
     this.kf.push({ el: d, t: 0 });
@@ -311,6 +332,7 @@ export class HUD {
   setScope(on, breathHeld) {
     this.el.scope.classList.toggle('hidden', !on);
     if (this.scopeBreath) this.scopeBreath.setAttribute('opacity', breathHeld ? '1' : '0');
+    if (this.scopeHint) this.scopeHint.setAttribute('opacity', on && !breathHeld ? '0.8' : '0');
   }
 
   /* ---------------------------------------------------------------- killcam */

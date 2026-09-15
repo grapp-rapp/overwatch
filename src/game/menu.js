@@ -5,8 +5,8 @@
    model and blits it into the card canvases, so the picture in the armoury is
    literally the weapon you will be holding.
    ========================================================================== */
-import { SKINS, SKIN_BY_ID, loadProfile, isUnlocked, unlockSkin, equipSkin, skinWeapon, currentSkin, HAND_TONES, setHandTone } from './skins.js';
-import { camoTexture } from './camo.js';
+import { SKINS, SKIN_BY_ID, loadProfile, isUnlocked, unlockSkin, equipSkin, skinWeapon, currentSkin, rarity, RARITY } from './skins.js';
+import { drawCamoThumb } from './camo.js';
 import * as THREE from 'three';
 import { PRIMARIES, SECONDARIES, WEAPONS, LETHALS, loadoutBars, stk, ttk } from '../weapons/defs.js';
 import { buildWeapon, buildLethal } from '../weapons/models.js';
@@ -411,46 +411,74 @@ export class Menu {
   _buildSkins() {
     this.profile = loadProfile();
     this.skinSel = this.profile.skin;
+    this.skinFilter = 'all';
+    this._thumbQ = [];
+    const grid = $('skinGrid'), frag = document.createDocumentFragment();
     this.skinCards = SKINS.map(s => {
-      const el = document.createElement('div');
-      el.className = 'skcard';
+      const el = document.createElement('div'), r = rarity(s);
+      el.className = 'skcard r-' + r;
       el.dataset.skin = s.id;
-      el.innerHTML = `<canvas width="150" height="54"></canvas>
-        <div class="gc-top"><span class="gc-name">${s.name}</span></div><span class="sk-tag"></span>`;
+      el.innerHTML = '<canvas width="150" height="54"></canvas><div class="gc-top"><span class="gc-name">' + s.name +
+        '</span></div><span class="sk-tag"></span>';
       el.addEventListener('click', () => { this.selectSkin(s.id); this.g.audio && this.g.audio.play('uiClick', { vol: 0.4 }); });
-      $('skinGrid').appendChild(el);
-      return { s, el, cv: el.querySelector('canvas'), tag: el.querySelector('.sk-tag'), drawn: false };
+      frag.appendChild(el);
+      return { s, el, r, cv: el.querySelector('canvas'), tag: el.querySelector('.sk-tag'), drawn: false };
     });
-    $('skBtn').addEventListener('click', () => this.buySkin());
-    $('skTones').innerHTML = HAND_TONES.map(t => '<button class="sk-tone" data-tone="' + t.id + '" title="' + t.id +
-      '" style="background:#' + t.hex.toString(16).padStart(6, '0') + '"></button>').join('');
-    $('skTones').querySelectorAll('.sk-tone').forEach(b => b.addEventListener('click', () => {
-      setHandTone(loadProfile(), b.dataset.tone);
-      this.g.audio && this.g.audio.play('uiClick', { vol: 0.4 });
+    grid.appendChild(frag);
+    /* hundreds of cards: a swatch is drawn only once its card scrolls into view */
+    const byEl = new Map(this.skinCards.map(c => [c.el, c]));
+    this._thumbObs = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        const c = byEl.get(e.target);
+        if (e.isIntersecting && c && !c.drawn) { c.drawn = true; this._thumbQ.push(c); this._thumbObs.unobserve(e.target); }
+      }
+    }, { root: grid, rootMargin: '160px' });
+    for (const c of this.skinCards) this._thumbObs.observe(c.el);
+    const count = { all: SKINS.length };
+    for (const c of this.skinCards) count[c.r] = (count[c.r] || 0) + 1;
+    $('skFilter').innerHTML = ['all', 'owned', ...RARITY].map(k => '<button class="sk-chip r-' + k + (k === 'all' ? ' active' : '') +
+      '" data-f="' + k + '">' + k.toUpperCase() + (count[k] ? ' <i>' + count[k] + '</i>' : '') + '</button>').join('');
+    $('skFilter').querySelectorAll('.sk-chip').forEach(b => b.addEventListener('click', () => {
+      this.skinFilter = b.dataset.f;
+      $('skFilter').querySelectorAll('.sk-chip').forEach(x => x.classList.toggle('active', x === b));
       this.refreshSkins();
+      grid.scrollTop = 0;
+      this.g.audio && this.g.audio.play('uiClick', { vol: 0.35 });
     }));
+    $('skBtn').addEventListener('click', () => this.buySkin());
     this.refreshSkins();
   }
   refreshSkins() {
-    const p = this.profile = loadProfile();
+    const p = this.profile = loadProfile(), f = this.skinFilter || 'all';
     $('hsBank').textContent = '◆ ' + p.headshots + (p.headshots === 1 ? ' HEADSHOT' : ' HEADSHOTS');
-    document.querySelectorAll('.sk-tone').forEach(b => b.classList.toggle('active', b.dataset.tone === p.hand));
+    const tab = document.querySelector('#tabs .tab[data-tab="skins"]');    // your bank, always in sight
+    if (tab) tab.innerHTML = 'SKINS <b class="tab-bank">◆ ' + p.headshots + '</b>';
     for (const c of this.skinCards) {
       const own = isUnlocked(p, c.s.id), eq = p.skin === c.s.id, n = c.s.cost;
       c.el.classList.toggle('locked', !own);
       c.el.classList.toggle('equipped', eq);
+      c.el.hidden = !(f === 'all' || (f === 'owned' ? own : c.r === f));
       c.tag.className = 'sk-tag ' + (eq ? 'eq' : own ? 'own' : 'cost');
-      c.tag.textContent = eq ? 'EQUIPPED' : own ? (n ? 'OWNED' : 'FREE') : '◆ ' + n + ' HEADSHOT' + (n > 1 ? 'S' : '');
+      c.tag.textContent = eq ? 'EQUIPPED' : own ? (n ? 'OWNED' : 'FREE') : '◆ ' + n;
+    }
+    // the first cards are in view at once; the observer brings in the rest as you scroll
+    let seen = 0;
+    for (const c of this.skinCards) {
+      if (c.el.hidden) continue;
+      if (++seen > 24) break;
+      if (!c.drawn) { c.drawn = true; this._thumbQ.push(c); if (this._thumbObs) this._thumbObs.unobserve(c.el); }
     }
     this.selectSkin(this.skinSel);
   }
   selectSkin(id) {
     const s = SKIN_BY_ID[id]; if (!s) return;
     this.skinSel = id;
-    const p = this.profile, own = isUnlocked(p, id), eq = p.skin === id, n = s.cost, short = n - p.headshots;
+    const p = this.profile, own = isUnlocked(p, id), eq = p.skin === id, n = s.cost, short = n - p.headshots, r = rarity(s);
     for (const c of this.skinCards) c.el.classList.toggle('active', c.s.id === id);
     $('skName').textContent = s.name;
-    $('skCost').textContent = !n ? 'FREE' : own ? 'OWNED' : '◆ ' + n + ' HEADSHOT' + (n > 1 ? 'S' : '');
+    const pill = $('skCost');
+    pill.className = 'pill r-' + r;
+    pill.textContent = r.toUpperCase() + ' · ' + (!n ? 'FREE' : own ? 'OWNED' : '◆ ' + n);
     $('skDesc').textContent = s.desc;
     const b = $('skBtn');
     b.disabled = eq || (!own && short > 0);
@@ -481,8 +509,8 @@ export class Menu {
         this.studio.draw($('skinRender'), pw, this.detailYaw, 0.12 + Math.sin(this.t * 0.5) * 0.08, false, 1.5);
         skinWeapon(this.studio.model(pw), currentSkin(this.profile));
       }
-      const c = this.skinCards.find(c => !c.drawn);   // one swatch a frame: each is a texture to generate
-      if (c) { drawSwatch(c.cv, c.s); c.drawn = true; }
+      // swatches for the cards that have scrolled into view, a few a frame
+      for (let k = 0; k < 4 && this._thumbQ.length; k++) { const c = this._thumbQ.shift(); drawSwatch(c.cv, c.s); }
     }
   }
 
@@ -495,9 +523,8 @@ export class Menu {
 
 /* a skin's card swatch: its real pattern, tinted the way the material tints it */
 function drawSwatch(cv, s) {
-  const ctx = cv.getContext('2d'), w = cv.width, h = cv.height, t = camoTexture(s), L = s.look || {};
-  if (t) { ctx.save(); ctx.scale(0.55, 0.55); ctx.fillStyle = ctx.createPattern(t.image, 'repeat'); ctx.fillRect(0, 0, w / 0.55, h / 0.55); ctx.restore(); }
-  else { ctx.fillStyle = s.swatch; ctx.fillRect(0, 0, w, h); }
+  const ctx = cv.getContext('2d'), w = cv.width, h = cv.height, L = s.look || {};
+  drawCamoThumb(s, cv);
   if (L.color !== undefined) {
     ctx.globalCompositeOperation = 'multiply';
     ctx.fillStyle = '#' + L.color.toString(16).padStart(6, '0'); ctx.fillRect(0, 0, w, h);

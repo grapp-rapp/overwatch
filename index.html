@@ -172,15 +172,15 @@
       <div class="armory">
         <div class="panel skin-grid-panel">
           <div class="panel-hd"><h2>SKINS</h2><span class="pill hs-bank" id="hsBank">◆ 0 HEADSHOTS</span></div>
+          <div class="sk-filter" id="skFilter"></div>
           <div class="skin-grid" id="skinGrid"></div>
-          <div class="sk-hint">Every headshot kill banks <b>◆ 1</b>. Spend them here &mdash; unlocks are permanent. A skin dresses your guns, your gloves and sleeves, and your operator.</div>
+          <div class="sk-hint">Every headshot kill banks <b>◆ 1</b>. Spend them here &mdash; unlocks are permanent. Common to legendary, and one ultimate. A skin dresses your guns, your arm and your operator.</div>
         </div>
         <div class="panel skin-detail-panel">
           <div class="panel-hd"><h2 id="skName">&mdash;</h2><span class="pill" id="skCost"></span></div>
           <canvas id="skinRender" width="640" height="300"></canvas>
           <div class="sk-desc" id="skDesc"></div>
           <div class="sk-actions"><button class="sk-btn" id="skBtn">EQUIP</button><span class="sk-note" id="skNote"></span></div>
-          <div class="sk-hand"><span class="sk-hand-k">YOUR HAND</span><div class="sk-tones" id="skTones"></div></div>
         </div>
       </div>
     </section>
@@ -230,6 +230,7 @@
 
   <!-- crosshair + hitmarker -->
   <div id="reticle"><svg viewBox="-50 -50 100 100" id="reticleSvg"></svg></div>
+  <div id="adsRet"><svg viewBox="-50 -50 100 100" id="adsRetSvg"></svg></div>
   <div id="hitmarker"><svg viewBox="-20 -20 40 40"><path d="M-14-14L-6-6M14-14L6-6M-14 14L-6 6M14 14L6 6" stroke-width="2.6" fill="none" stroke-linecap="round"/></svg></div>
 
   <!-- top bar: score + timer -->
@@ -329,7 +330,8 @@
   </div>
 </div>
 
-<div id="clickToPlay" class="hidden"><div class="ctp-inner"><div class="ctp-ic">◎</div>CLICK TO CAPTURE POINTER</div></div>
+<div id="deploying" class="hidden">DEPLOYING<span>PREPARING THE MATCH</span></div>
+  <div id="clickToPlay" class="hidden"><div class="ctp-inner"><div class="ctp-ic">◎</div>CLICK TO CAPTURE POINTER</div></div>
 
 <script type="module" src="./src/main.js"></script>
 </body>

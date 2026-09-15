@@ -84,11 +84,17 @@ field), the sky, every weapon, all the gear, the aircraft, and the entire map.
 
 ---
 
-**You have a body.** Look down and you see your own legs and boots, walking
-with you, while your shadow comes from the whole operator. A punch drops the gun
-out of the way and throws your fist from the lower left, on the same timing
-curve as the hit itself: a real hand, curled fingers and a wrapped thumb, in the
-skin tone you pick on the SKINS tab.
+**You have a body.** Look down and you see your own stomach, legs and boots,
+moving with you, while your shadow comes from the whole operator. A punch drops the gun
+out of the way and throws your operator's own left fist from the lower left, on
+the same timing curve as the hit itself: the arm and glove you see in a
+killcam, the fingers closed into a fist.
+
+**Climb what you can reach.** Jump at a ledge you cannot land on and keep
+pushing toward it: your hand goes flat on the lip and you pull yourself up and
+over, the view dipping so you watch it happen. Anything from waist height to a
+stretch above your head (about 2.4 m from the ground, with the jump) that is
+deep enough to stand on - not a sheer wall, not the top of a fence.
 
 ## Controls
 
@@ -104,7 +110,7 @@ skin tone you pick on the SKINS tab.
 | **G** | Lethal (hold to cook a frag) |
 | **V** | Melee |
 | **B** | Cycle fire mode |
-| **H** | Hold breath (scoped) |
+| **Shift** or **H** | Hold breath while scoped: the 8x settles |
 | **5 / 7** | Call in an earned killstreak |
 | **6** | Team airstrike (one per team, per match) |
 | **Tab** | Scoreboard |
@@ -160,20 +166,28 @@ time against every live enemy and never place you where one can already see you.
 
 ## Skins
 
-Fifteen skins on the **SKINS** tab: five free, ten bought with headshots. Every
-headshot kill banks one headshot for good (the bank and your unlocks are kept in
-the browser's localStorage). Unlocking spends from the bank; equipping is free.
+337 skins on the **SKINS** tab. Five are free; the rest cost headshots. Every
+headshot kill on your side banks one for good: yours, and your teammates' too.
+The kill feed marks each one **HS +1**, and the results screen shows your
+headshot kills and the team's share. The bank is kept in the browser (and in
+memory, if the browser will not keep it) and mirrored to `save/profile.json`.
+Unlocking spends from the bank; equipping is free.
 
-| Free | Bought with headshots |
-|---|---|
-| STANDARD ISSUE, WOODLAND, DESERT, ARCTIC, URBAN DIGITAL | TIGER STRIPE 1, NIGHT OPS 2, CARBON 2, RED DRAGON 3, JUNGLE 3, DEEP OCEAN 4, VOLCANIC 5, NEON SYNTH 6, CHROME 8, GOLD 10 |
+| Rarity | Skins | Cost | |
+|---|---|---|---|
+| Free | 5 | 0 | Standard issue and four classic camos |
+| Common | 70 | 1-15 | Most earth-tone finishes, and the simplest ones in brighter colours |
+| Rare | 154 | 16-60 | Every finish in bright colourways; the richer finishes in earth tones |
+| Epic | 93 | 65-200 | Metal and neon colourways: gold, chrome, copper, plasma, toxic, void |
+| Legendary | 14 | 220-500 | Neon nebulas and nine hand-made skins, several animated: MOLTEN CORE's magma moves, ELECTRIC's current runs, AURORA drifts, PRISM's colours turn, GOLDEN DRAGON is solid gold scales |
+| Ultimate | 1 | 750 | **SINGULARITY**: a galaxy in the metal. The stars drift, the colours turn, the light breathes |
 
-A skin dresses your guns where a real camo goes (receiver, furniture,
-handguard, magazine; never the barrel, bolt, slide or glass), your punching
-sleeve, and your own operator: the legs you see when you look down,
-and all of you in a killcam. Bots keep their faction colours, so a team still
-reads at a glance. VOLCANIC and NEON SYNTH glow; CHROME and GOLD are mirror
-metal.
+Twelve finishes (camo, digital, tiger, spots, hex, weave, marble, scale,
+circuit, damascus, shard, nebula) in twenty-six colourways; filter by rarity or
+by what you own. A skin dresses your guns where a real camo goes (receiver,
+furniture, handguard, magazine; never the barrel, bolt, slide or glass) and your
+own operator: the body you look down at and the arm you punch and climb with.
+Bots keep their faction colours, so a team still reads at a glance.
 
 ## Project layout
 
@@ -200,6 +214,7 @@ tools/
   qa-capture.js       screenshot pipeline (WebGL + composited HUD)
 dev/chartest.html     character rig / animation / IK inspector
 qa/                   captured screenshots (JPEG)
+save/                 your headshot bank and unlocks (written by the dev server)
 ```
 
 ## Documentation

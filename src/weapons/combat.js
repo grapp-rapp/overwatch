@@ -38,6 +38,7 @@ export class WeaponState {
     this.sinceFire = 99;
     this.swayT = rng() * 100;
     this.breath = 1;          // 1 = full lungs, 0 = out of breath
+    this.steady = 0;          // 1 = breath held and the scope settled
     this.holdingBreath = false;
     this.equipT = 0;
     this.dryClick = 0;
@@ -54,7 +55,7 @@ export class WeaponState {
     this.reloading = false; this.bolting = false; this.bloom = 0;
     this.recoilPitch = this.recoilYaw = 0; this.shotIndex = 0;
     this.shotPitch = this.shotYaw = 0;
-    this.visualKick = this.visualYaw = 0; this.breath = 1;
+    this.visualKick = this.visualYaw = 0; this.breath = 1; this.steady = 0;
   }
 
   /** Current cone half-angle in radians. */
@@ -132,8 +133,11 @@ export class WeaponState {
     /* breath (scoped snipers) */
     const sw = this.def.sway;
     if (sw) {
-      if (this.holdingBreath && this.breath > 0) this.breath = Math.max(0, this.breath - dt / sw.breathHold);
+      const hold = this.holdingBreath && this.breath > 0;
+      if (hold) this.breath = Math.max(0, this.breath - dt / sw.breathHold);
       else this.breath = Math.min(1, this.breath + dt / sw.breathRecover);
+      // holding settles the scope in a few frames; letting go, or running out, lets it drift again
+      this.steady += ((hold ? 1 : 0) - this.steady) * Math.min(1, dt * (hold ? 10 : 3));
     }
     this.swayT += dt;
 

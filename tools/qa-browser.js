@@ -88,7 +88,7 @@ function autoRoute(m) {
  */
 async function ensureLive() {
   const g = G();
-  if (g.state === 'MENU' || g.state === 'RESULT' || g.matchOver) g.deploy();
+  if (g.state === 'MENU' || g.state === 'RESULT' || g.matchOver) { g.deploy(); if (g.deployReady) await g.deployReady; }
   await new Promise(r => setTimeout(r, 80));
   // keys only count once pointer lock is taken or refused; some tabs refuse slowly
   for (let i = 0; i < 60 && !(g.input.locked || g.input.lockUnavailable); i++) await new Promise(r => setTimeout(r, 50));
@@ -151,6 +151,11 @@ function pullTrigger() {
 }
 
 /* ================================================================ TEST 1 */
+/* A page the harness has loaded banks no headshots outside a guardProfile()
+   section (skins.js awardHeadshot): its bots kept fighting between runs, and
+   their headshots went into the player's real save. */
+window.__qaNoBank = true;
+
 export function testBoot() {
   return {
     name: 'cold boot',
@@ -539,6 +544,7 @@ export function testPerformance(frames = 320) {
   const prevNoRender = window.__noRender;
   const prevW = R.domElement.width, prevH = R.domElement.height;
   window.__noRender = false;
+  const prevRatio = R.getPixelRatio(); R.setPixelRatio(1);   // the game's automatic resolution stays out of the measurement
   R.setSize(1920, 1080, false);
   g.camera.aspect = 1920 / 1080; g.camera.updateProjectionMatrix();
   if (window.__effects) window.__effects.setPixelScale(1080);
@@ -590,7 +596,7 @@ export function testPerformance(frames = 320) {
   const drawCalls = info.render.calls, triangles = info.render.triangles;
   window.__benchmark = false;
   window.__noRender = prevNoRender;
-  R.setSize(prevW, prevH, false);
+  R.setPixelRatio(prevRatio); R.setSize(Math.round(prevW / prevRatio), Math.round(prevH / prevRatio), false);
   g.camera.aspect = prevW / prevH; g.camera.updateProjectionMatrix();
   if (window.__effects) window.__effects.setPixelScale(prevH);
   return {
@@ -915,12 +921,14 @@ export function testAI() {
 export async function testControls() {
   const g = G();
   await ensureLive();
-  window.__stepN(30, 1 / 60);
   const I = g.input, me = g.me;
-  /* nobody shoots the player mid-probe: a death here stopped movement and,
-     worse, left the next test starting inside a killcam */
+  /* nobody shoots the player mid-probe, or while it settles: a death here
+     stopped movement and, worse, left the next test starting inside a killcam.
+     The bots used to stand down only after 30 settling frames, and a bot that
+     killed you in them left D, A and W dead still and S carried by the respawn. */
   const savedBots = g.actors.map(a => a.bot);
   for (const a of g.actors) a.bot = null;
+  window.__stepN(30, 1 / 60);
   /* start on open ground: a tree beside the spawn turns a direction test into a collision test */
   const cs = openSpot(3.2, 3.2, 3.2);
   if (cs) { me.pos.set(cs.x, g.groundHeight(cs.x, cs.z, 0.5, 0.4), cs.z); me.vel.set(0, 0, 0); }
@@ -1333,6 +1341,92 @@ export async function testBlood() {
 }
 
 /**
+ * Every sight can be looked through, and the 8x settles when you hold your breath.
+ *
+ * Aiming puts the optic's eye point on the camera axis, so nothing solid may
+ * sit on that line or close round it. The first version failed on every gun
+ * but the 8x - a solid red-dot base, a closed ACOG tube, opaque glass, a
+ * revolver hammer - and aiming showed a black block. Rays from the eye through
+ * the screen centre, and rings of rays 1 and 2.5 degrees out, must reach the
+ * world past the gun; iron sights may have their front post below the centre
+ * and their rear notch beyond 1 degree. The glass must be see-through. The 8x
+ * sway was a 1.35-degree loop that H alone could steady; now it must stay
+ * under 0.8 degrees and drop below 15% within 0.3 s of holding Shift.
+ */
+export async function testSights() {
+  await ensureLive();
+  const g = G(), I = g.input, me = g.me, V = window.__viewmodel, { WEAPONS } = window.__defs;
+  const THREE = await import('/assets/lib/three.module.js');
+  const saved = g.actors.map(a => a.bot);
+  for (const a of g.actors) a.bot = null;
+  const keep = [me.weapons.primary.def.id, me.weapons.secondary.def.id, me.lethalDef.id];
+  const rc = new THREE.Raycaster(); rc.near = 0.001; rc.far = 2;
+  const O = new THREE.Vector3(), D = new THREE.Vector3();
+  const S = { adsW: 1, speed: 0, grounded: true, crouch: 0, sprint: 0, lookDX: 0, lookDY: 0, reloading: false,
+    reloadProgress: 0, equipT: 0, equipDur: 1, hidden: false, boltT: 0, boltDur: 1, melee: 0, mantle: 0 };
+  const sights = {}, blocked = [];
+  let solidGlass = 0;
+  try {
+    for (const id of Object.keys(WEAPONS)) {
+      const def = WEAPONS[id];
+      V.setWeapon(def);
+      for (let i = 0; i < 40; i++) V.update(1 / 60, S);
+      V.scene.updateMatrixWorld(true);
+      const solid = [];
+      V.weapon.traverse(o => { if (o.isMesh && o.visible && !o.material.transparent) solid.push(o); });
+      solidGlass += solid.filter(o => o.name === 'lens').length;
+      const hit = (ax, ay) => { D.set(Math.tan(ax), Math.tan(ay), -1).normalize(); rc.set(O, D); return rc.intersectObjects(solid, false)[0]; };
+      const iron = !['dot', 'holo', 'acog', 'sniper'].includes(def.reticle);
+      const ring = (deg, skipDown) => {
+        let n = 0;
+        for (let k = 0; k < 16; k++) {
+          const a = k / 16 * Math.PI * 2, r = deg * Math.PI / 180;
+          if (skipDown && Math.sin(a) < -0.3) continue;
+          if (hit(Math.cos(a) * r, Math.sin(a) * r)) n++;
+        }
+        return n;
+      };
+      const c = hit(0, 0), r1 = ring(1, iron), r25 = iron ? 0 : ring(2.5, false);
+      sights[id] = c ? 'centre: ' + c.object.name : r1 || r25 ? 'ring: ' + r1 + '+' + r25 : 'clear';
+      if (sights[id] !== 'clear') blocked.push(id);
+    }
+
+    /* the red dot shows once you are aiming, and the hip cross goes */
+    g._equip(me, 'vk71', keep[1], keep[2]); me.slot = 'primary'; me.weapons.primary.reset();
+    V.setWeapon(WEAPONS.vk71); g.hud.setWeapon(WEAPONS.vk71);
+    me.adsWant = true; I.mouse.right = true;
+    for (let i = 0; i < 40; i++) { me.health = 100; window.__step(1 / 60); }
+    const adsRet = document.getElementById('adsRet'), hip = document.getElementById('reticle');
+    const dotShown = !!adsRet && +adsRet.style.opacity > 0.9 && !!adsRet.querySelector('.ad') && +hip.style.opacity < 0.05;
+
+    /* the 8x: how far it drifts, and how fast Shift settles it */
+    g._equip(me, 'longbow', keep[1], keep[2]); me.slot = 'primary'; me.weapons.primary.reset();
+    V.setWeapon(WEAPONS.longbow); g.hud.setWeapon(WEAPONS.longbow);
+    for (let i = 0; i < 50; i++) { me.health = 100; window.__step(1 / 60); }
+    const W = me.weapon, t0 = W.swayT;
+    const peakAt = () => { let p = 0; for (let t = 0; t < 8; t += 1 / 30) { W.swayT = t0 + t; const s = g.swayOffset(W, 1); p = Math.max(p, Math.hypot(s.x, s.y)); } W.swayT = t0; return p; };
+    const free = peakAt() * 180 / Math.PI;
+    const hintOn = g.hud.scopeHint && g.hud.scopeHint.getAttribute('opacity') !== '0';
+    I.keys.add('ShiftLeft');
+    for (let i = 0; i < 18; i++) { me.health = 100; window.__step(1 / 60); }
+    const held = peakAt() * 180 / Math.PI;
+    const stillAiming = me.adsW > 0.95 && me.sprint < 0.1, holding = !!W.holdingBreath;
+    const hintOff = g.hud.scopeHint && g.hud.scopeHint.getAttribute('opacity') === '0';
+    I.keys.delete('ShiftLeft');
+
+    const pass = !blocked.length && !solidGlass && dotShown && free > 0.1 && free < 0.8 && held < free * 0.15
+      && stillAiming && holding && hintOn && hintOff;
+    return { name: 'sights', pass, blocked, solidGlass, dotShown, swayDeg: +free.toFixed(2), heldDeg: +held.toFixed(3),
+      stillAiming, holding, hintOn, hintOff, sights };
+  } finally {
+    I.keys.delete('ShiftLeft'); I.mouse.right = false; me.adsWant = false;
+    g._equip(me, keep[0], keep[1], keep[2]); me.slot = 'primary'; me.weapons.primary.reset();
+    V.setWeapon(me.weapon.def); g.hud.setWeapon(me.weapon.def);
+    for (let i = 0; i < g.actors.length; i++) g.actors[i].bot = saved[i];
+  }
+}
+
+/**
  * The map-shaped tests on every map: spawn safety, sight against the bullet
  * raycast, the map walk, the AI, controls, airstrike, melee, blood and
  * rendered frame time. Each map is deployed fresh before its run.
@@ -1342,8 +1436,9 @@ export async function testBlood() {
    legs (cut at the waist, your own gun hidden) while the shadow keeps the
    whole body. */
 export async function testFirstPerson() {
-  const g = G(), I = g.input, V = window.__viewmodel, me = g.me, cam = g.camera;
+  const g = G(), I = g.input, V = window.__viewmodel, cam = g.camera;
   await ensureLive();
+  const me = g.me;                                  // only after the deploy: the menu has no operator
   window.__stepN(20, 1 / 60);
   const saved = g.actors.map(a => a.bot);
   for (const a of g.actors) a.bot = null;
@@ -1365,26 +1460,29 @@ export async function testFirstPerson() {
       window.__step(1 / 60); if (f === 0) I.keys.delete('KeyV');
       pose(0);
       lowest = Math.min(lowest, V.rig.position.y);
-      if (V.fist.visible) {
+      const A = window.__fpArm;                   // your own arm, as main.js drew it this frame
+      if (A && A.on) {
         fistFrames++;
-        const p = V.fist.position;
-        if (Math.abs(p.x) < 0.08 && p.z < -0.42) centred = true;
-        if (V.rig.position.y > restY - 0.08 && p.z < -0.35) gunDownWhileFist = false;
+        // the wrist in the arm pass's screen space: just under the crosshair at the hit
+        // x times the aspect: a squarer window puts the same fist further out in screen terms
+        if (Math.abs(A.ndc[0]) * cam.aspect < 0.45 && A.ndc[1] < 0 && A.ndc[1] > -0.6 && V.handPose.pos.z < -0.42) centred = true;
+        if (V.rig.position.y > restY - 0.08 && V.handPose.pos.z < -0.35) gunDownWhileFist = false;
       }
     }
-    const fistGone = !V.fist.visible;
+    const fistGone = !(window.__fpArm && window.__fpArm.on);
     /* 2. the legs */
     for (let f = 0; f < 4; f++) { window.__step(1 / 60); pose(-1.25); }
     const legsLayer = cam.layers.isEnabled(6), gunHidden = !cam.layers.isEnabled(4);
     const tris = (geo) => (geo.index ? geo.index.count : geo.attributes.position.count) / 3;
-    let legs = null, body = null, botsClean = true, weaponOnOwnLayer = !!me.char.weaponModel;
-    me.char.model.traverse(o => { if (o.userData.fpLegs) legs = o; else if (o.isSkinnedMesh && o !== me.char.visorMesh) body = o; });
+    let legs = null, arm = null, body = null, botsClean = true, weaponOnOwnLayer = !!me.char.weaponModel;
+    me.char.model.traverse(o => { if (o.userData.fpLegs) legs = o; else if (o.userData.fpArm) arm = o; else if (o.isSkinnedMesh && !o.userData.fpCut && o !== me.char.visorMesh) body = o; });
+    const armCut = !!arm && arm.layers.isEnabled(7) && !cam.layers.isEnabled(7);   // its own pass, never the world's
     const legsShare = legs && body ? tris(legs.geometry) / tris(body.geometry) : 0;
     // the whole body still casts the shadow; the legs cut never does (no double shadow)
     const bodyShadow = !!body && body.castShadow && body.layers.isEnabled(5) && !!legs && !legs.castShadow;
     const clipped = !!legs && legs.layers.isEnabled(6) && legsShare > 0.15 && legsShare < 0.6;
     for (const a of g.actors) if (a !== me && a.char) a.char.model.traverse(o => {
-      if (o.userData.fpLegs || (o.isMesh && o.layers.isEnabled(5))) botsClean = false;
+      if (o.userData.fpCut || (o.isMesh && o.layers.isEnabled(5))) botsClean = false;
     });
     if (me.char.weaponModel) me.char.weaponModel.traverse(o => { if (o.isMesh && !o.layers.isEnabled(4)) weaponOnOwnLayer = false; });
     let upperOff = 0;   // helmet, visor, plate carrier: shadow only
@@ -1392,9 +1490,9 @@ export async function testFirstPerson() {
     const upperHidden = !cam.layers.isEnabled(5);
     pose(0);
     const pass = fistFrames >= 12 && centred && fistGone && gunDownWhileFist && restY - lowest > 0.15 &&
-      legsLayer && gunHidden && upperOff >= 1 && upperHidden && clipped && bodyShadow && botsClean && weaponOnOwnLayer;
+      legsLayer && gunHidden && upperOff >= 1 && upperHidden && clipped && armCut && bodyShadow && botsClean && weaponOnOwnLayer;
     return { name: 'first-person', pass, fistFrames, centred, fistGone, gunDrop: +(restY - lowest).toFixed(3), gunDownWhileFist,
-      legsLayer, gunHidden, clipped, bodyShadow, botsClean, weaponOnOwnLayer, upperOff, upperHidden, legsShare: +legsShare.toFixed(2) };
+      legsLayer, gunHidden, clipped, armCut, bodyShadow, botsClean, weaponOnOwnLayer, upperOff, upperHidden, legsShare: +legsShare.toFixed(2) };
   } finally { window.__noRender = nr; restore(); }
 }
 
@@ -1402,13 +1500,15 @@ export async function testFirstPerson() {
    Skins: five free, ten bought with banked headshot kills. A skin dresses your
    gun, fist and operator - and nobody else - and every one of them compiles. */
 export async function testSkins() {
-  const g = G(), S = await import('/src/game/skins.js'), V = window.__viewmodel, me = g.me;
-  const KEY = 'obk.profile.v1', backup = localStorage.getItem(KEY);
+  const g = G(), S = await import('/src/game/skins.js'), V = window.__viewmodel;
+  const KEY = 'obk.profile.v1';
+  const putBack = await guardProfile();
   const first = (m) => (Array.isArray(m) ? m[0] : m);
   const camoOf = (m) => !!(m && m.userData && m.userData.camoUniforms);
   await ensureLive();
+  const me = g.me;                                   // after the deploy: before it there is no you
   try {
-    localStorage.removeItem(KEY);
+    localStorage.removeItem(KEY); S.dropProfileCache();   // an empty bank: the in-memory copy as well
     let p = S.loadProfile();
     const free = S.SKINS.filter(s => S.isUnlocked(p, s.id)).length, paid = S.SKINS.filter(s => s.cost > 0).length;
     const tooPoor = S.unlockSkin(p, 'tiger');                   // costs 1, the bank is empty
@@ -1430,7 +1530,8 @@ export async function testSkins() {
     const parts = {};
     V.weapon.traverse(o => { if (o.isMesh) parts[o.name] = camoOf(first(o.material)); });
     const gunOk = parts.poly === true && parts.steel === false && parts.lens === false;
-    const sleeveOk = camoOf(V.fistSleeve.material);
+    let sleeveOk = false;                          // your own arm wears it too
+    me.char.model.traverse(o => { if (o.userData.fpArm && camoOf(first(o.material))) sleeveOk = true; });
     let suitOk = false, legsWear = false, botsClean = true, tpGun = false;
     me.char.model.traverse(o => {
       if (!o.isSkinnedMesh || /visor/i.test(o.name)) return;
@@ -1440,26 +1541,208 @@ export async function testSkins() {
     });
     for (const a of g.actors) if (a !== me && a.char) a.char.model.traverse(o => { if (o.isMesh && camoOf(first(o.material))) botsClean = false; });
     if (me.char.weaponModel) me.char.weaponModel.traverse(o => { if (o.isMesh && o.name === 'poly') tpGun = camoOf(first(o.material)); });
-    /* every skin compiles: draw a frame in each */
+    /* every finish compiles: draw a frame in one skin of each, and every legendary */
     const nr = window.__noRender; window.__noRender = false;
-    const bad = new Set();
-    for (const s of S.SKINS) {
+    const bad = new Set(), seen = new Set(), sample = [];
+    for (const s of S.SKINS) { const k = s.camo ? s.camo.pat : '-'; if (!seen.has(k) || s.cost >= 250) { seen.add(k); sample.push(s); } }
+    const top = S.SKINS.reduce((a, s) => (s.cost > a.cost ? s : a)), atTop = S.SKINS.filter(s => s.cost === 750).length;
+    const unique = new Set(S.SKINS.map(s => s.id)).size === S.SKINS.length;
+    for (const s of sample) {
       V.setSkin(s); S.skinOperator(me.char, s); window.__step(1 / 60);
       for (const pr of window.__renderer.info.programs || []) if (pr.diagnostics && !pr.diagnostics.runnable) bad.add(s.id);
     }
     window.__noRender = nr;
-    const pass = free === 5 && paid === 10 && !tooPoor.ok && afterBody === b0 && afterHead === b0 + 1 && bought.ok &&
+    const pass = free === 5 && paid >= 300 && atTop === 1 && !!top.ultimate && unique && !tooPoor.ok && afterBody === b0 && afterHead === b0 + 1 && bought.ok &&
       !short.ok && equipped && !lockedEquip && gunOk && sleeveOk && suitOk && legsWear && botsClean && tpGun && !bad.size;
-    return { name: 'skins', pass, free, paid, tooPoor: tooPoor.reason, bankBody: afterBody - b0, bankHead: afterHead - b0,
+    return { name: 'skins', pass, free, paid, total: S.SKINS.length, top: top.name + ' ' + top.cost, atTop, unique, compiled: sample.length, tooPoor: tooPoor.reason, bankBody: afterBody - b0, bankHead: afterHead - b0,
       bought: bought.reason, short: short.reason, equipped, lockedEquip, gunParts: parts, sleeveOk, suitOk, legsWear,
       botsClean, tpGun, shaderErrors: [...bad] };
   } finally {
-    if (backup === null) localStorage.removeItem(KEY); else localStorage.setItem(KEY, backup);
+    await putBack();
     const s = S.currentSkin(); V.setSkin(s); S.skinOperator(me.char, s);
   }
 }
 
+/* The harness plays real matches, so its headshot kills would pile up in the
+   player's own bank. Snapshot it - the browser copy and the save file - and
+   put it back afterwards. */
+export async function guardProfile() {
+  window.__qaGuards = (window.__qaGuards || 0) + 1; window.__qaNoBank = false;   // inside a guard, banking puts itself back
+  const KEY = 'obk.profile.v1', raw = localStorage.getItem(KEY);
+  const file = await fetch('/_save/profile', { cache: 'no-store' }).then(r => (r.ok ? r.text() : null)).catch(() => null);
+  const empty = JSON.stringify({ headshots: 0, earned: 0, unlocked: [], skin: 'standard', hand: 'medium', savedAt: 0 });
+  return async () => {
+    if (--window.__qaGuards <= 0) { window.__qaGuards = 0; window.__qaNoBank = true; }
+    if (raw === null) localStorage.removeItem(KEY); else localStorage.setItem(KEY, raw);
+    try { (await import('/src/game/skins.js')).dropProfileCache(); } catch (e) { /* an older build */ }
+    const body = file && file !== 'null' ? file : raw || empty;
+    await fetch('/_save/profile', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }).catch(() => {});
+  };
+}
+
+/**
+ * Headshot kills reach the bank: yours and your team's.
+ *
+ * The game said "headshot" where nothing was banked - the kill feed marked
+ * teammates' headshot kills HS, the result screen's HEADSHOTS counted head
+ * hits that did not kill - and where browser storage would not keep the
+ * profile every read came back empty, so each kill said "+1 (1)". Now a
+ * headshot kill by you or a teammate banks one and the kill feed shows +1;
+ * a body kill or an enemy's headshot does not; with storage blocked the bank
+ * still grows; the result screen counts headshot kills and your team's share.
+ * The player's real bank is put back afterwards.
+ */
+export async function testHeadshotBank() {
+  await ensureLive();
+  const putBack = await guardProfile();
+  const g = G(), me = g.me, S = await import('/src/game/skins.js');
+  const saved = g.actors.map(a => a.bot);
+  for (const a of g.actors) a.bot = null;
+  const mate = g.actors.find(a => a !== me && a.team === me.team);
+  const foes = g.actors.filter(a => a.team !== me.team);
+  const bank = () => S.loadProfile().headshots;
+  const tag = () => { const k = document.querySelector('#killfeed .kf:last-child'); return !k ? '-' : k.querySelector('.hs b') ? 'HS+1' : k.querySelector('.hs') ? 'HS' : 'none'; };
+  const kill = (killer, victim, head) => {
+    victim.alive = true; victim.health = 100; if (victim.char) victim.char.revive();
+    g.applyDamage(victim, 1000, killer, killer.weapon.def.name, head, null, head ? 'head' : 'chest');
+    return tag();
+  };
+  const got = (fn) => { const b = bank(); const t = fn(); return [bank() - b, t]; };
+  const Sp = Storage.prototype, get = Sp.getItem, set = Sp.setItem;
+  try {
+    if (!mate || foes.length < 2) return { name: 'headshot bank', pass: false, note: 'no teammate or enemies' };
+    const hs0 = me.hsKills || 0, team0 = g.teamBanked || 0;
+    const yours = got(() => kill(me, foes[0], true));
+    const body = got(() => kill(me, foes[1], false));
+    const team = got(() => kill(mate, foes[0], true));
+    const teamBody = got(() => kill(mate, foes[1], false));
+    const enemy = got(() => kill(foes[0], mate, true));
+    // storage that keeps nothing: the bank must still grow
+    Sp.getItem = function () { throw new Error('blocked'); };
+    Sp.setItem = function () { throw new Error('blocked'); };
+    let blocked = 0;
+    try { const b = bank(); kill(me, foes[1], true); kill(mate, foes[0], true); blocked = bank() - b; }
+    finally { Sp.getItem = get; Sp.setItem = set; }
+    const hsKills = (me.hsKills || 0) - hs0, teamBanked = (g.teamBanked || 0) - team0;
+    g.showResult();                               // endMatch waits 1.4 s of game time before this
+    const res = (document.getElementById('resStats') || {}).textContent || '';
+    const result = res.includes('HEADSHOT KILLS') && res.includes('TEAM +' + (g.teamBanked || 0));
+    const rs = document.getElementById('result'); if (rs) rs.classList.add('hidden');
+    const pass = yours[0] === 1 && yours[1] === 'HS+1' && body[0] === 0 && team[0] === 1 && team[1] === 'HS+1'
+      && teamBody[0] === 0 && enemy[0] === 0 && enemy[1] === 'HS' && blocked === 2 && hsKills === 2 && teamBanked === 2 && result;
+    return { name: 'headshot bank', pass, yours, body, team, teamBody, enemy, blocked, hsKills, teamBanked, result };
+  } finally {
+    Sp.getItem = get; Sp.setItem = set;
+    for (let i = 0; i < g.actors.length; i++) g.actors[i].bot = saved[i];
+    await putBack();
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Crouching lowers the body: the hips come down, the feet stay on the ground
+   and the knees stay well below your eyes. The bug: the legs folded up under
+   hips that never moved, into your own first-person view. */
+export async function testCrouch() {
+  const g = G(), I = g.input, V = T().Vector3;
+  await ensureLive();
+  const me = g.me, c = me.char;                    // after the deploy: a match that just ended leaves a stale you
+  const saved = g.actors.map(a => a.bot); for (const a of g.actors) a.bot = null;
+  const rel = (o) => { const v = new V(); o.getWorldPosition(v); return v.y - me.pos.y; };
+  try {
+    const spot = openSpot(2.0, 1.0) || { x: me.pos.x, z: me.pos.z };
+    me.pos.set(spot.x, g.groundHeight(spot.x, spot.z, 0.5, 0.4), spot.z); me.vel.set(0, 0, 0); me.pitch = 0;
+    window.__stepN(30, 1 / 60);
+    const stand = { hips: rel(c.bones.Hips), foot: rel(c.bone('LeftFoot')) };
+    I.keys.add('KeyC');
+    window.__stepN(40, 1 / 60);
+    const cr = { hips: rel(c.bones.Hips), foot: rel(c.bone('LeftFoot')), knee: rel(c.bone('LeftLeg')), eye: me.eyeY };
+    window.__stepN(120, 1 / 60);                     // two more seconds: nothing creeps
+    const later = rel(c.bones.Hips);
+    I.keys.delete('KeyC');
+    window.__stepN(40, 1 / 60);
+    const back = rel(c.bones.Hips), drop = stand.hips - cr.hips;
+    const pass = drop > 0.3 && drop < 0.5 && cr.foot < 0.25 && cr.eye - cr.knee > 0.45 &&
+      Math.abs(later - cr.hips) < 0.02 && Math.abs(back - stand.hips) < 0.03;
+    return { name: 'crouch', pass, hipDrop: +drop.toFixed(2), footWhenCrouched: +cr.foot.toFixed(2),
+      kneeBelowEye: +(cr.eye - cr.knee).toFixed(2), creep: +(later - cr.hips).toFixed(3), standsBack: +(back - stand.hips).toFixed(3) };
+  } finally { I.keys.delete('KeyC'); for (let i = 0; i < g.actors.length; i++) g.actors[i].bot = saved[i]; }
+}
+
+/* ---------------------------------------------------------------------------
+   Jump at a ledge you cannot land on and you pull yourself up onto it; one
+   that is too tall you do not; and without pushing toward it nothing happens. */
+export async function testMantle() {
+  const g = G(), I = g.input, VM = window.__viewmodel;
+  await ensureLive();
+  const me = g.me, M = g.map;                      // after the deploy, as above
+  const saved = g.actors.map(a => a.bot); for (const a of g.actors) a.bot = null;
+  const nr = window.__noRender; window.__noRender = false;
+  const find = (lo, hi) => {
+    for (const b of M.boxes) {
+      if (!b.standable || b.solid === false || b.x1 - b.x0 < 0.9 || b.z1 - b.z0 < 0.9) continue;
+      for (const [nx, nz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const fx = nx > 0 ? b.x1 : nx < 0 ? b.x0 : (b.x0 + b.x1) / 2, fz = nz > 0 ? b.z1 : nz < 0 ? b.z0 : (b.z0 + b.z1) / 2;
+        const px = fx + nx * 0.6, pz = fz + nz * 0.6, gy = g.groundHeight(px, pz, b.y1 - 0.5, 0.36), h = b.y1 - gy;
+        if (h < lo || h > hi) continue;
+        if (Math.abs(g.groundHeight(px + nx * 0.5, pz + nz * 0.5, gy + 0.3, 0.36) - gy) > 0.02) continue;
+        if (g.groundHeight(fx - nx * 0.5, fz - nz * 0.5, b.y1 + 0.05, 0.1) !== b.y1) continue;
+        if (!g.spaceFree(fx - nx * 0.45, fz - nz * 0.45, b.y1 + 0.03, b.y1 + 1.8, 0.36)) continue;
+        if (!g.spaceFree(px, pz, gy + 0.1, b.y1 + 1.9, 0.36)) continue;
+        return { px, pz, gy, top: b.y1, yaw: Math.atan2(-nx, -nz), h };
+      }
+    }
+    return null;
+  };
+  const attempt = (L, push) => {
+    me.alive = true; me.health = 100; me.mantle = null; me.crouch = 0;
+    me.pos.set(L.px, L.gy, L.pz); me.vel.set(0, 0, 0); me.yaw = L.yaw; me.pitch = 0;
+    window.__stepN(10, 1 / 60);
+    if (push) I.keys.add('KeyW');
+    I.keys.add('Space'); I.pressed.add('Space');
+    let mantled = false, handFrames = 0;
+    for (let f = 0; f < 150; f++) {
+      window.__step(1 / 60); if (f === 1) I.keys.delete('Space');
+      if (me.mantle) mantled = true;
+      if (window.__fpArm && window.__fpArm.on) handFrames++;
+      if (mantled && !me.mantle && me.grounded) break;
+    }
+    I.keys.delete('KeyW');
+    return { mantled, handFrames, onTop: Math.abs(me.pos.y - L.top) < 0.05 && me.grounded };
+  };
+  try {
+    const L = find(1.3, 2.1);
+    if (!L) return { name: 'mantle', pass: false, note: 'no ledge found' };
+    const ok = attempt(L, true), noPush = attempt(L, false);
+    const tall = find(2.6, 3.4), tooTall = tall ? attempt(tall, true) : null;
+    const pass = ok.mantled && ok.onTop && ok.handFrames > 0 && !noPush.mantled && (!tooTall || !tooTall.mantled);
+    return { name: 'mantle', pass, ledge: +L.h.toFixed(2), ok, noPush: noPush.mantled, tooTall: tooTall ? { h: +tall.h.toFixed(2), mantled: tooTall.mantled } : 'none found' };
+  } finally { window.__noRender = nr; I.keys.delete('Space'); I.keys.delete('KeyW'); for (let i = 0; i < g.actors.length; i++) g.actors[i].bot = saved[i]; }
+}
+
+/* ---------------------------------------------------------------------------
+   The bank outlives the browser's storage: saves are mirrored to the file,
+   an empty browser gets it back at boot, and a browser that has earned more
+   wins over an older file. Your real profile and file are put back after. */
+export async function testSave() {
+  const S = await import('/src/game/skins.js'), KEY = 'obk.profile.v1';
+  const putBack = await guardProfile(), pause = () => new Promise(r => setTimeout(r, 200));
+  const file = () => fetch('/_save/profile', { cache: 'no-store' }).then(r => r.json());
+  try {
+    const p = S.loadProfile(); p.headshots = 7; p.earned = 9; p.unlocked = ['tiger']; S.saveProfile(p);
+    await pause();
+    const f1 = await file(), mirrored = !!f1 && f1.headshots === 7 && f1.earned === 9 && f1.unlocked.includes('tiger');
+    localStorage.removeItem(KEY);                    // the browser forgets
+    const back = await S.syncProfile(), now = S.loadProfile();
+    const restored = back.headshots === 7 && now.headshots === 7 && now.unlocked.includes('tiger');
+    const q = S.loadProfile(); q.headshots = 8; q.earned = 10; localStorage.setItem(KEY, JSON.stringify(q));
+    const newer = await S.syncProfile(); await pause();
+    const f2 = await file(), newerWins = newer.earned === 10 && f2.earned === 10;
+    return { name: 'save file', pass: mirrored && restored && newerWins, mirrored, restoredAfterWipe: restored, newerWins };
+  } finally { await putBack(); }
+}
+
 export async function runMaps(ids = MAP_ORDER) {
+  const putBack = await guardProfile();
   const out = {};
   for (const id of ids) {
     const g = G();
@@ -1478,17 +1761,19 @@ export async function runMaps(ids = MAP_ORDER) {
     out[id] = { map: g.map.id, pass: r.every(x => x.pass), failed: r.filter(x => !x.pass).map(x => x.name), results: r };
   }
   window.__mapResults = out;
+  await putBack();
   return out;
 }
 
 export async function runAll(opts = {}) {
   const out = [];
+  const putBack = await guardProfile();          // the player's bank is not the harness's
   const push = (r) => { out.push(r); console.log(`[qa] ${r.pass ? 'PASS' : 'FAIL'}  ${r.name}`); return r; };
   push(testBoot());
   push(testBallistics());
   push(testRecoilLearnability());
   push(testWallPenetrationHonesty());
-  if (G().state === 'MENU') G().deploy();
+  if (G().state === 'MENU') { G().deploy(); if (G().deployReady) await G().deployReady; }
   window.__stepN(60, 1 / 60);
   push(testHitZones());
   push(testEveryWeapon());
@@ -1501,9 +1786,15 @@ export async function runAll(opts = {}) {
   push(await testMelee());
   push(await testBlood());
   push(await testFirstPerson());
+  push(await testSights());
   push(await testSkins());
+  push(await testHeadshotBank());
+  push(await testCrouch());
+  push(await testMantle());
+  push(await testSave());
   await ensureLive();
   push(testPerformance(opts.perfFrames ?? 320));
+  await putBack();
   window.__qaResults = out;
   return { pass: out.every(r => r.pass), failed: out.filter(r => !r.pass).map(r => r.name), results: out };
 }

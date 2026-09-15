@@ -426,6 +426,21 @@ const LIMP = {
 /* A body lies CORPSE_HOLD seconds, then fades out over CORPSE_FADE; its blood
    stays on the ground well after it (effects.js). */
 const CORPSE_HOLD = 2.3, CORPSE_FADE = 0.7;
+/* scratch for the first-person arm */
+const _fa = new THREE.Vector3(), _fb = new THREE.Vector3(), _fc = new THREE.Vector3(), _fd = new THREE.Vector3();
+const _fq = new THREE.Quaternion(), _fm = new THREE.Matrix4();
+const _fe = new THREE.Vector3(), _ff = new THREE.Vector3(), _fg = new THREE.Vector3();
+const _ab1 = new THREE.Vector3(), _ab2 = new THREE.Vector3(), _abq = new THREE.Quaternion(), _abq2 = new THREE.Quaternion();
+/* turn a bone so its child lies along the line to `target` (world), keeping its twist */
+function aimBone(bone, child, target) {
+  bone.updateWorldMatrix(true, false); child.updateWorldMatrix(false, false);
+  const b = _ab1.setFromMatrixPosition(bone.matrixWorld);
+  const cur = _ab2.setFromMatrixPosition(child.matrixWorld).sub(b).normalize();
+  const want = b.negate().add(target).normalize();
+  _abq.setFromUnitVectors(cur, want).multiply(bone.getWorldQuaternion(_abq2));
+  setWorldQuaternion(bone, _abq);
+  bone.updateWorldMatrix(false, true);
+}
 
 /* a transparent copy of a material for the corpse fade, made once per operator */
 function fadeCopy(F, m) {
@@ -514,6 +529,18 @@ export class Character {
     this._restLocal = {};
     for (const k in this.bones) this._restLocal[k] = this.bones[k].quaternion.clone();
     this._hipRestY = this.hips.position.y;
+    /* The hips' parent is the rig's own "Character" node, which works in
+       centimetres with Z up. A crouch written as "hips.y minus 0.42" moved the
+       hips 4 mm sideways, so crouching folded the legs up under a body that
+       never came down - into your own view in first person. Work out what one
+       metre down is in that node's space, once. */
+    this.root.updateMatrixWorld(true);
+    {
+      const pq = this.hips.parent.getWorldQuaternion(new THREE.Quaternion());
+      const rq = this.root.getWorldQuaternion(new THREE.Quaternion());
+      const ps = this.hips.parent.getWorldScale(new THREE.Vector3());
+      this._hipDown = new THREE.Vector3(0, -1, 0).applyQuaternion(rq.invert().multiply(pq).invert()).divideScalar(ps.y || 1);
+    }
 
     /* --- gear ------------------------------------------------------------
        Gear is modelled in metres. Bone space is not metres (the armature
@@ -785,7 +812,10 @@ export class Character {
     /* --- 4. crouch: drop the hips, bend knees and ankles ----------------- */
     if (this.crouch > 0.002) {
       const c = this.crouch;
-      this.hips.position.y = this._hipRestY - (0.42 / ASSETS.scale) * c;
+      const hp = this._hipsFromClip();
+      hp.y = this._hipRestY;
+      hp.addScaledVector(this._hipDown, 0.42 * c);      // on top of the clip's own bob
+      (this._hipWritten || (this._hipWritten = new THREE.Vector3())).copy(hp);
       for (const side of ['Left', 'Right']) {
         const up = this.bone(side + 'UpLeg'), lo = this.bone(side + 'Leg'), ft = this.bone(side + 'Foot');
         const au = this._restAxes[side + 'UpLeg'], al = this._restAxes[side + 'Leg'], af = this._restAxes[side + 'Foot'];
@@ -797,7 +827,9 @@ export class Character {
       this._qtmp.setFromAxisAngle(ax.right, 0.16 * c);
       b.quaternion.multiply(this._qtmp);
     } else {
-      this.hips.position.y = this._hipRestY;
+      const hp = this._hipsFromClip();
+      hp.y = this._hipRestY;
+      (this._hipWritten || (this._hipWritten = new THREE.Vector3())).copy(hp);
     }
 
     /* --- 5. arms: put the hands on the gun ------------------------------ */
@@ -948,6 +980,16 @@ export class Character {
     if (fade <= 0) this.root.visible = false;
   }
 
+  /* The clip's hip position this frame. A frame the mixer skipped (far LOD)
+     still holds what we wrote last time, so start from the clip value saved
+     then - otherwise the crouch drop would pile up frame on frame. */
+  _hipsFromClip() {
+    const hp = this.hips.position, clip = this._hipClip || (this._hipClip = new THREE.Vector3());
+    if (this._hipWritten && hp.equals(this._hipWritten)) hp.copy(clip);
+    clip.copy(hp);
+    return hp;
+  }
+
   /* Corpse fade. Transparent copies of this operator's materials are swapped
      in only while it fades (made once, kept), so the gear and weapon materials
      every operator shares never change and nobody alive pays for blending. */
@@ -968,6 +1010,102 @@ export class Character {
       }
       for (const m of Array.isArray(o.material) ? o.material : [o.material]) m.opacity = m.userData.baseOpacity * k;
     });
+  }
+
+  /* First person: your own left arm, for the punch and the ledge grab. The
+     arm is IK'd so the wrist lands on `wrist` (world), the hand turned so its
+     fingers run along `fingers` with the thumb toward `thumb`, and the fingers
+     curled by `curl` (1 a fist, 0 open). `shoulder`, if given, is where the
+     arm starts (world): the punch roots it low at the side of your view so the
+     forearm comes in at an angle instead of hiding the fist behind it. Out of
+     reach, the shoulder slides toward the wrist - it is never on screen.
+     restoreArm() puts every bone back after the draw, so nothing else ever
+     sees the pose. */
+  poseFirstPersonArm(wrist, fingers, thumb, pole, curl, shoulder) {
+    const up = this.bone('LeftArm'), lo = this.bone('LeftForeArm'), hand = this.lHand;
+    if (!up || !lo || !hand) return false;
+    const cal = this._handCal || (this._handCal = this._calibrateHand());
+    if (!this._armKeep) this._armKeep = [up, lo, hand, ...cal.joints.map(j => j.b)].map(b => ({ b, q: new THREE.Quaternion(), p: new THREE.Vector3() }));
+    for (const k of this._armKeep) { k.q.copy(k.b.quaternion); k.p.copy(k.b.position); }
+    this._armPosed = true;
+    up.updateWorldMatrix(true, true);
+    if (shoulder) { up.position.copy(up.parent.worldToLocal(_fd.copy(shoulder))); up.updateWorldMatrix(false, true); }
+    let S = _fa.setFromMatrixPosition(up.matrixWorld);
+    _fb.setFromMatrixPosition(lo.matrixWorld); _fc.setFromMatrixPosition(hand.matrixWorld);
+    const a = S.distanceTo(_fb), b = _fb.distanceTo(_fc), need = S.distanceTo(wrist);
+    if (need > (a + b) * 0.97) {                // out of reach: the shoulder slides toward the wrist
+      _fd.copy(wrist).sub(S).setLength(need - (a + b) * 0.97).add(S);
+      up.position.copy(up.parent.worldToLocal(_fd)); up.updateWorldMatrix(false, true);
+      S = _fa.setFromMatrixPosition(up.matrixWorld);
+    }
+    /* two bones with the elbow bent toward `pole`, solved outright and each bone
+       aimed at its point: exact from any starting pose. The shared solver steps
+       from the current pose, and from the rifle hold it left a guard 15 cm off. */
+    const dir = _fd.copy(wrist).sub(S), dist = clamp(dir.length(), Math.abs(a - b) + 1e-3, a + b - 1e-3);
+    dir.normalize();
+    const bend = _fe.copy(pole).sub(S);
+    bend.addScaledVector(dir, -bend.dot(dir));
+    if (bend.lengthSq() < 1e-8) bend.set(0, -1, 0);
+    bend.normalize();
+    const cosA = clamp((a * a + dist * dist - b * b) / (2 * a * dist), -1, 1);
+    _ff.copy(S).addScaledVector(dir, a * cosA).addScaledVector(bend, a * Math.sqrt(1 - cosA * cosA));
+    _fg.copy(S).addScaledVector(dir, dist);
+    aimBone(up, lo, _ff);
+    aimBone(lo, hand, _fg);
+    /* the hand: its own finger and thumb axes onto the ones asked for */
+    _fa.copy(fingers).normalize();
+    _fb.copy(thumb).addScaledVector(_fa, -thumb.dot(_fa)).normalize();
+    _fc.crossVectors(_fa, _fb);
+    _fm.makeBasis(_fa, _fb, _fc).multiply(cal.localInv);
+    setWorldQuaternion(hand, _fq.setFromRotationMatrix(_fm));
+    for (const j of cal.joints) j.b.quaternion.multiply(_fq.setFromAxisAngle(j.axis, j.max * curl));
+    hand.updateWorldMatrix(false, true);
+    return true;
+  }
+
+  restoreArm() {
+    if (!this._armPosed) return;
+    for (const k of this._armKeep) { k.b.quaternion.copy(k.q); k.b.position.copy(k.p); }
+    this._armPosed = false;
+    this.bone('LeftArm').updateWorldMatrix(true, true);
+  }
+
+  /* Once: the left hand's own axes (fingers toward the middle knuckle, the
+     thumb side), and the local axis that closes each finger joint toward the
+     palm - found by trying all six on the middle finger and keeping the one
+     that brings its tip nearest the thumb's root; the thumb's the same way,
+     onto the curled index. No bone names or axis conventions assumed. */
+  _calibrateHand() {
+    const B = (n) => this.bone(n);
+    const fingerL = B('LeftHandMiddle1').position.clone().normalize();
+    const thumbL = B('LeftHandThumb1').position.clone().projectOnPlane(fingerL).normalize();
+    const localInv = new THREE.Matrix4().makeBasis(fingerL, thumbL, new THREE.Vector3().crossVectors(fingerL, thumbL)).transpose();
+    const AX = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]].map(a => new THREE.Vector3(a[0], a[1], a[2]));
+    const wp = (b) => { b.updateWorldMatrix(true, false); return new THREE.Vector3().setFromMatrixPosition(b.matrixWorld); };
+    const tip = (c) => { const pa = wp(c[c.length - 2]), pb = wp(c[c.length - 1]); return pb.clone().add(pb.clone().sub(pa).multiplyScalar(0.8)); };
+    const best = (chain, angle, target) => {
+      const keep = chain.map(b => b.quaternion.clone());
+      let win = AX[0], wd = Infinity;
+      for (const ax of AX) {
+        chain.forEach((b, i) => b.quaternion.copy(keep[i]).multiply(_fq.setFromAxisAngle(ax, angle)));
+        const dd = tip(chain).distanceTo(target());
+        if (dd < wd) { wd = dd; win = ax; }
+      }
+      chain.forEach((b, i) => b.quaternion.copy(keep[i]));
+      return win;
+    };
+    const thumbRoot = wp(B('LeftHandThumb1'));
+    const fAx = best(['LeftHandMiddle1', 'LeftHandMiddle2', 'LeftHandMiddle3'].map(B), 1.2, () => thumbRoot);
+    const MAX = [1.35, 1.6, 1.1], joints = [];
+    for (const f of ['Index', 'Middle', 'Ring', 'Pinky']) for (let i = 1; i <= 3; i++) { const b = B('LeftHand' + f + i); if (b) joints.push({ b, axis: fAx, max: MAX[i - 1] }); }
+    const before = joints.map(j => j.b.quaternion.clone());
+    joints.forEach(j => j.b.quaternion.multiply(_fq.setFromAxisAngle(j.axis, j.max)));
+    const thumb = ['LeftHandThumb1', 'LeftHandThumb2'].map(B).filter(Boolean), idx2 = B('LeftHandIndex2');
+    const tAx = thumb.length === 2 && idx2 ? best(thumb, 0.6, () => wp(idx2)) : AX[4];
+    joints.forEach((j, i) => j.b.quaternion.copy(before[i]));
+    thumb.forEach((b, i) => joints.push({ b, axis: tAx, max: i === 0 ? 0.35 : 0.9 }));
+    this._handAxes = { finger: fAx.toArray(), thumb: tAx.toArray() };
+    return { localInv, joints };
   }
 
   /* ---- hit registration --------------------------------------------------- */

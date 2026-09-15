@@ -289,10 +289,12 @@ export class Effects {
     /* ---- lights ---- */
     this.lights = [];
     for (let i = 0; i < 4; i++) {
+      /* always visible, dark when idle: hiding a light changes the scene's light
+         count, and every lit material then recompiles for the new count - the
+         two-second freezes in a fight, 60 programs compiled mid-match */
       const L = new THREE.PointLight(0xffcc77, 0, 9, 2);
-      L.visible = false;
       scene.add(L);
-      this.lights.push({ L, t: 0, dur: 0, peak: 0 });
+      this.lights.push({ L, t: 0, dur: 0, peak: 0, on: false });
     }
     this.lIdx = 0;
 
@@ -329,7 +331,7 @@ export class Effects {
     l.L.position.copy(pos).addScaledVector(dir, 0.3);
     l.L.color.setHex(0xffbb66);
     l.L.distance = 11 * scale;
-    l.peak = 14 * scale; l.dur = 0.06; l.t = 0; l.L.visible = true;
+    l.peak = 14 * scale; l.dur = 0.06; l.t = 0; l.on = true;
 
     // burning powder
     for (let i = 0; i < 4; i++) {
@@ -591,7 +593,7 @@ export class Effects {
     const l = this.lights[this.lIdx = (this.lIdx + 1) % 4];
     l.L.position.copy(pos); l.L.color.setHex(0xff9a3c);
     l.L.distance = radius * 5;
-    l.peak = 70; l.dur = big ? 0.55 : 0.34; l.t = 0; l.L.visible = true;
+    l.peak = 70; l.dur = big ? 0.55 : 0.34; l.t = 0; l.on = true;
 
     for (let i = 0; i < 46; i++) {
       const a = rng() * 6.283, e = Math.acos(rng() * 1.6 - 0.6);
@@ -699,10 +701,10 @@ export class Effects {
 
     /* lights */
     for (const l of this.lights) {
-      if (!l.L.visible) continue;
+      if (!l.on) continue;
       l.t += dt;
       const k = l.t / l.dur;
-      if (k >= 1) { l.L.visible = false; l.L.intensity = 0; continue; }
+      if (k >= 1) { l.on = false; l.L.intensity = 0; continue; }
       l.L.intensity = l.peak * (1 - k) * (1 - k);
     }
 
@@ -770,7 +772,7 @@ export class Effects {
     for (const s of this.shells) { s.live = false; this.shellMesh.setMatrixAt(s.i, zero); }
     this.shellMesh.instanceMatrix.needsUpdate = true;
     for (const s of this.sprites) { s.live = false; s.m.visible = false; }
-    for (const l of this.lights) { l.L.visible = false; l.L.intensity = 0; }
+    for (const l of this.lights) { l.on = false; l.L.intensity = 0; }
     this.clearBlood();
   }
 }

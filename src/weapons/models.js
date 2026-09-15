@@ -27,8 +27,9 @@ const M = {
   wood:   new THREE.MeshStandardMaterial({ color: 0x4a3a28, roughness: 0.70, metalness: 0.05 }),
   rubber: new THREE.MeshStandardMaterial({ color: 0x121314, roughness: 0.95, metalness: 0.0 }),
   brass:  new THREE.MeshStandardMaterial({ color: 0xb08d3f, roughness: 0.30, metalness: 1.0 }),
-  glass:  new THREE.MeshStandardMaterial({ color: 0x0a1a24, roughness: 0.08, metalness: 0.2,
-            emissive: 0x0e3550, emissiveIntensity: 0.55 }),
+  glass:  new THREE.MeshStandardMaterial({ color: 0x3a6a80, roughness: 0.05, metalness: 0.3,
+            emissive: 0x0e3550, emissiveIntensity: 0.35,
+            transparent: true, opacity: 0.16, depthWrite: false }),   // see-through: solid glass made aiming black
   lens:   new THREE.MeshBasicMaterial({ color: 0x8fd6ff, transparent: true, opacity: 0.28 }),
 };
 
@@ -59,6 +60,16 @@ function slab(w, h, len, r = 0.006, bevel = 0.0035) {
 /** Cylinder with its axis along Z. */
 function tube(r1, r2, len, seg = 12, open = false) {
   const g = new THREE.CylinderGeometry(r1, r2, len, seg, 1, open);
+  g.rotateX(Math.PI / 2);
+  return g;
+}
+
+/** Open cylinder along Z to look through: radii rIn/rOut at the rear (-z), rIn2/rOut2 at the front.
+ *  No inner wall, so from the eye you see the rim and the world through it. The
+ *  outer corner is doubled so the lathe gives flat faces, not rounded ones. */
+function ring(rIn, rOut, len, seg = 16, rIn2 = rIn, rOut2 = rOut) {
+  const h = len / 2, V = (x, y) => new THREE.Vector2(x, y);
+  const g = new THREE.LatheGeometry([V(rIn, -h), V(rOut, -h), V(rOut, -h), V(rOut2, h), V(rOut2, h), V(rIn2, h)], seg);
   g.rotateX(Math.PI / 2);
   return g;
 }
@@ -160,55 +171,70 @@ function magGeo(kind) {
   }
 }
 
-/** Optic: red dot / holo / ACOG / long scope. Returns { geos, lensGeos, eyeZ, eyeY } */
-function opticAssembly(kind, zBase, yTop) {
+/** Optic: red dot / holo / ACOG / long scope / iron sights. Returns { g, lens, eyeZ, eyeY }.
+ *  Aiming puts eyeY on the camera axis, so nothing solid may cross that line:
+ *  housings are open rings, bases sit below it, the glass is see-through, and
+ *  iron sights are a rear notch with the front post's tip on the line. The
+ *  first version had a solid base or a closed tube there on every sight but
+ *  the 8x (whose view is the scope overlay), and aiming showed a black block.
+ *  `front` is where the iron front post stands: { z, y } of the surface under
+ *  it, and `bead` for the shotgun's taller post. */
+function opticAssembly(kind, zBase, yTop, front) {
   const g = [], lens = [];
   switch (kind) {
     case 'scope8': {
-      const L = 0.30;
-      g.push(at(tube(0.023, 0.023, L, 16), 0, yTop + 0.036, zBase + L / 2));
-      g.push(at(tube(0.030, 0.030, 0.058, 16), 0, yTop + 0.036, zBase + L - 0.024)); // objective bell
-      g.push(at(tube(0.027, 0.027, 0.040, 16), 0, yTop + 0.036, zBase + 0.020));     // ocular
-      g.push(at(tube(0.014, 0.014, 0.020, 10), 0, yTop + 0.058, zBase + L * 0.52));  // elevation turret
-      g.push(at(tube(0.013, 0.013, 0.019, 10, false), 0.020, yTop + 0.036, zBase + L * 0.52, 0, Math.PI / 2));
-      // rings
-      g.push(at(tube(0.028, 0.028, 0.014, 12), 0, yTop + 0.036, zBase + 0.072));
-      g.push(at(tube(0.028, 0.028, 0.014, 12), 0, yTop + 0.036, zBase + L - 0.070));
-      g.push(at(box(0.020, 0.030, 0.014), 0, yTop + 0.014, zBase + 0.072));
-      g.push(at(box(0.020, 0.030, 0.014), 0, yTop + 0.014, zBase + L - 0.070));
-      lens.push(at(tube(0.027, 0.027, 0.002, 16), 0, yTop + 0.036, zBase + L - 0.050));
-      lens.push(at(tube(0.024, 0.024, 0.002, 16), 0, yTop + 0.036, zBase + 0.002));
-      return { g, lens, eyeY: yTop + 0.036, eyeZ: zBase };
+      const L = 0.30, y = yTop + 0.036;
+      g.push(at(ring(0.020, 0.023, L, 16), 0, y, zBase + L / 2));             // main tube
+      g.push(at(ring(0.026, 0.030, 0.058, 16), 0, y, zBase + L - 0.024));     // objective bell
+      g.push(at(ring(0.023, 0.027, 0.040, 16), 0, y, zBase + 0.020));         // ocular
+      g.push(at(tube(0.014, 0.014, 0.020, 10), 0, y + 0.030, zBase + L * 0.52, Math.PI / 2)); // elevation turret
+      g.push(at(tube(0.013, 0.013, 0.019, 10), 0.032, y, zBase + L * 0.52, 0, Math.PI / 2));  // windage
+      for (const z of [0.072, L - 0.070]) {                                    // rings and their bases
+        g.push(at(ring(0.023, 0.028, 0.014, 12), 0, y, zBase + z));
+        g.push(at(box(0.020, 0.018, 0.014), 0, yTop + 0.006, zBase + z));
+      }
+      lens.push(at(tube(0.026, 0.026, 0.002, 16), 0, y, zBase + L - 0.050));
+      lens.push(at(tube(0.023, 0.023, 0.002, 16), 0, y, zBase + 0.002));
+      return { g, lens, eyeY: y, eyeZ: zBase };
     }
     case 'acog': {
-      const L = 0.155;
-      g.push(at(tube(0.019, 0.024, L, 14), 0, yTop + 0.030, zBase + L / 2));
-      g.push(at(tube(0.027, 0.027, 0.030, 14), 0, yTop + 0.030, zBase + L - 0.012));
-      g.push(at(box(0.030, 0.024, 0.050), 0, yTop + 0.008, zBase + 0.050));
-      g.push(at(tube(0.010, 0.010, 0.016, 8), 0, yTop + 0.050, zBase + 0.040));
-      lens.push(at(tube(0.024, 0.024, 0.002, 14), 0, yTop + 0.030, zBase + L - 0.020));
-      lens.push(at(tube(0.017, 0.017, 0.002, 14), 0, yTop + 0.030, zBase + 0.004));
-      return { g, lens, eyeY: yTop + 0.030, eyeZ: zBase };
+      /* Nothing may sit inside the cone you see through the eyepiece: the bell's
+         back face, a turret and a long mount all showed as rings and bars in the
+         picture. The bell is open at the back and the mount is short, at the eye end. */
+      const L = 0.155, y = yTop + 0.030;
+      g.push(at(ring(0.018, 0.022, L, 16, 0.0155, 0.019), 0, y, zBase + L / 2)); // body, narrowing forward
+      g.push(at(ring(0.027, 0.027, 0.030, 16, 0.022, 0.027), 0, y, zBase + L - 0.012)); // objective bell
+      g.push(at(box(0.026, 0.012, 0.020), 0, yTop + 0.003, zBase + 0.006));      // mount
+      lens.push(at(tube(0.022, 0.022, 0.002, 16), 0, y, zBase + L - 0.012));
+      lens.push(at(tube(0.018, 0.018, 0.002, 16), 0, y, zBase + 0.004));
+      return { g, lens, eyeY: y, eyeZ: zBase };
     }
     case 'holo': {
-      g.push(at(slab(0.040, 0.036, 0.072, 0.005, 0.002), 0, yTop + 0.026, zBase + 0.010));
-      g.push(at(box(0.044, 0.044, 0.008), 0, yTop + 0.030, zBase + 0.084));
-      g.push(at(box(0.006, 0.044, 0.010), 0.019, yTop + 0.030, zBase + 0.080));
-      g.push(at(box(0.006, 0.044, 0.010), -0.019, yTop + 0.030, zBase + 0.080));
-      lens.push(at(box(0.032, 0.032, 0.002), 0, yTop + 0.030, zBase + 0.082));
-      return { g, lens, eyeY: yTop + 0.030, eyeZ: zBase };
+      const y = yTop + 0.030;
+      g.push(at(slab(0.040, 0.014, 0.072, 0.004, 0.002), 0, yTop + 0.006, zBase + 0.010)); // base
+      for (const sx of [-1, 1]) g.push(at(box(0.004, 0.034, 0.070), sx * 0.021, y, zBase + 0.047)); // hood sides
+      g.push(at(box(0.046, 0.005, 0.010), 0, y + 0.0195, zBase + 0.080));      // hood top, front
+      g.push(at(box(0.046, 0.005, 0.008), 0, y + 0.0195, zBase + 0.016));      // and rear
+      lens.push(at(box(0.038, 0.034, 0.002), 0, y, zBase + 0.082));
+      return { g, lens, eyeY: y, eyeZ: zBase };
     }
     case 'dot': {
-      g.push(at(slab(0.030, 0.026, 0.044, 0.005, 0.002), 0, yTop + 0.020, zBase + 0.006));
-      g.push(at(tube(0.017, 0.017, 0.036, 12, true), 0, yTop + 0.030, zBase + 0.044));
-      g.push(at(box(0.034, 0.008, 0.040), 0, yTop + 0.008, zBase + 0.020));
-      lens.push(at(tube(0.0155, 0.0155, 0.002, 12), 0, yTop + 0.030, zBase + 0.044));
-      return { g, lens, eyeY: yTop + 0.030, eyeZ: zBase };
+      const y = yTop + 0.030;
+      g.push(at(slab(0.026, 0.012, 0.040, 0.004, 0.002), 0, yTop + 0.007, zBase + 0.020)); // base
+      g.push(at(ring(0.0145, 0.017, 0.034, 16), 0, y, zBase + 0.044));        // the housing you look through
+      lens.push(at(tube(0.0145, 0.0145, 0.002, 16), 0, y, zBase + 0.052));
+      return { g, lens, eyeY: y, eyeZ: zBase };
     }
     default: { // iron sights
-      g.push(at(box(0.004, 0.016, 0.004), 0, yTop + 0.012, zBase + 0.02));
-      g.push(at(box(0.020, 0.004, 0.005), 0, yTop + 0.018, zBase + 0.02));
-      return { g, lens, eyeY: yTop + 0.013, eyeZ: zBase };
+      const y = yTop + 0.013, f = front || { z: zBase + 0.10, y: yTop };
+      for (const sx of [-1, 1]) g.push(at(box(0.0055, 0.007, 0.005), sx * 0.00525, y - 0.0005, zBase)); // rear notch
+      g.push(at(box(0.016, y - yTop, 0.005), 0, (y + yTop - 0.008) / 2, zBase));   // notch base, down into the frame
+      let py = f.y;
+      if (f.bead) { g.push(at(box(0.010, 0.008, 0.014), 0, py + 0.004, f.z)); py += 0.008; }
+      const ph = y - 0.0004 - py;                                              // the tip sits on the line
+      g.push(at(box(0.0035, ph, 0.004), 0, py + ph / 2, f.z));
+      if (f.bead) g.push(at(tube(0.0022, 0.0022, 0.003, 8), 0, y - 0.0026, f.z - 0.001));
+      return { g, lens, eyeY: y, eyeZ: zBase };
     }
   }
 }
@@ -339,7 +365,11 @@ export function buildWeapon(def) {
   const opticKind = def.reticle === 'sniper' ? 'scope8' : def.reticle === 'acog' ? 'acog'
     : def.reticle === 'holo' ? 'holo' : def.reticle === 'dot' ? 'dot' : 'iron';
   if (!isPistol) accent.push(...railGeo(recLen * 0.80, recZ0 + recLen * 0.14, yTop + 0.004, 0.021));
-  const opt = opticAssembly(opticKind, recZ0 + recLen * (K === 'sniper' ? 0.10 : 0.22), yTop + (isPistol ? -0.002 : 0.007));
+  // iron front post: on the slide's nose, on a rib at the revolver's muzzle, on the shotgun's heat shield
+  const front = K === 'revolver' ? { z: bz0 + bLen - 0.012, y: 0.0275 }
+    : isPistol ? { z: recZ0 + recLen * 0.90, y: recH * 0.50 - 0.001 }
+    : K === 'shotgun' ? { z: bz0 + bLen * 0.60, y: 0.019, bead: true } : null;
+  const opt = opticAssembly(opticKind, recZ0 + recLen * (K === 'sniper' ? 0.10 : 0.22), yTop + (K === 'revolver' ? 0.009 : isPistol ? -0.002 : 0.007), front);
   dark.push(...opt.g); lens.push(...opt.lens);
 
   /* ---------- magazine ---------- */
@@ -359,7 +389,12 @@ export function buildWeapon(def) {
   }
   if (K === 'revolver') {
     steel.push(at(tube(0.008, 0.008, 0.10, 8), 0, -0.014, bz0 + 0.04)); // ejector rod
-    blued.push(at(box(0.012, 0.014, 0.026), 0, 0.026, recZ0 + 0.004)); // hammer
+    blued.push(at(box(0.010, 0.014, 0.022), 0, 0.022, recZ0 + 0.004)); // hammer
+    /* the sight line runs over the cylinder, as on a real revolver: it ran through
+       the cylinder and the hammer, and aiming showed black. A top strap bridges
+       the cylinder and a rib along the barrel carries the front sight. */
+    blued.push(at(box(0.016, 0.004, 0.060), 0, 0.0305, 0.028));           // top strap
+    blued.push(at(box(0.007, 0.029 - bR, bLen - 0.01), 0, (0.027 + bR) / 2, bz0 + (bLen - 0.01) / 2)); // barrel rib
   }
 
   /* ---------- charging handle / bolt (animated) ---------- */
@@ -377,7 +412,7 @@ export function buildWeapon(def) {
     } else if (K === 'sniper') {
       s.push(at(tube(0.008, 0.008, 0.052, 8), 0.030, 0.008, recZ0 + 0.075, 0, 0.30));
       s.push(at(tube(0.013, 0.013, 0.018, 10), 0.046, 0.004, recZ0 + 0.052));
-    } else {
+    } else if (K !== 'revolver') {   // a revolver has no bolt handle: it had a rifle's, sticking out beside the sights
       s.push(at(box(0.016, 0.011, 0.038), 0.030, 0.016, recZ0 + recLen * 0.72));
       s.push(at(box(0.030, 0.008, 0.012), 0.036, 0.016, recZ0 + recLen * 0.72));
     }

@@ -171,7 +171,7 @@ export const WEAPONS = {
   /* ===================== SNIPER (Intervention-class) ===================== */
   longbow: {
     id: 'longbow', name: 'LONGBOW .408', cls: 'BOLT-ACTION SNIPER', slot: 'primary', kind: 'sniper',
-    desc: 'Intervention-class .408 bolt gun under a true 8x magnifying scope. Anything above the navel is a kill, anywhere on the map. The cost is a 1.35-second bolt cycle, a heavy sway you must hold your breath through, and a scope glint that tells everyone where you are.',
+    desc: 'Intervention-class .408 bolt gun under a true 8x magnifying scope. Anything above the navel is a kill, anywhere on the map. The cost is a 1.35-second bolt cycle, a slow scope drift you steady by holding your breath (Shift), and a scope glint that tells everyone where you are.',
     rpm: 44, fire: FIRE.BOLT, mag: 5, reserve: 30, pellets: 1, boltTime: 1.35,
     damage: { near: 105, far: 92, nearRange: 90, farRange: 140 },
     headMult: 1.6, limbMult: 0.62, upperTorsoMult: 1.0, penetration: 0.95, muzzleVel: 950,
@@ -181,7 +181,7 @@ export const WEAPONS = {
               bloom: 0.55, decay: 3.0, moveMult: 2.6, airMult: 5.0, crouchMult: 0.55 },
     ads: { time: 0.545, fov: 12, sensMult: 0.36, moveMult: 0.30 },
     scoped: true, scopeFov: 8.0, glint: true,
-    sway: { amp: 1.35, freq: 0.62, breathHold: 3.2, breathRecover: 5.0 },
+    sway: { amp: 0.5, freq: 1.0, breathHold: 4.0, breathRecover: 4.0 },
     optic: 'MAG 8x SCOPE', reticle: 'sniper', magnify: 8,
     reload: { tac: 3.05, empty: 3.85 }, swap: { in: 1.05, out: 0.72 },
     mobility: 38, sprintSpeed: 5.70, walkSpeed: 3.70, adsSpeed: 1.35,

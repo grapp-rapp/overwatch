@@ -329,10 +329,12 @@ a 3D-only render.
 | `04-sniper-scope.jpg` | LONGBOW .408 through the 8× optic (camera FOV 8° vs 85°): lens vignette, mil-dot ladder, a hostile at 46 m, bullet-hole decals on a container |
 | `05-hitmarker.jpg` | Hitmarker on a hostile at 10 m, muzzle flash on the barrel, ammo counter stepped down |
 | `06-killcam.jpg` | First-person killcam from ECHO-11's eyes, letterboxed, with the killer's name, weapon and respawn countdown |
-| `10-punch-guard.jpg`, `10-punch.jpg` | The punch: your bare fist raised in the guard at the lower left, then landing under the crosshair with the gun dropped out of view; rolled WOODLAND sleeve |
-| `11-legs.jpg`, `11-legs-walk.jpg` | Looking down: your own legs and boots (the legs-only cut of your body), standing and mid-stride, in WOODLAND |
-| `12-skins.jpg` | The SKINS tab: fifteen patterns, the headshot bank, prices, and TIGER STRIPE previewed on your primary |
+| `15-punch-guard.jpg`, `15-punch.jpg` | The punch with your operator's own arm: the gloved fist raised thumb-up at the lower left, then the forearm driving in from the lower left to land just left of the crosshair |
+| `19-look-down-0.7.jpg`, `19-look-down.jpg`, `19-look-straight-down.jpg`, `19-look-down-walk.jpg` | Looking down: stomach and belt at the bottom of the view, then legs and boots, at three angles and mid-stride. `14-look-down-before.jpg` is the bug the video showed |
+| `18-skins.jpg`, `18-singularity-a.jpg`, `18-singularity-b.jpg` | The SKINS tab filtered to LEGENDARY with SINGULARITY previewed, then SINGULARITY on your rifle 1.5 s apart: the colours turn and the stars drift |
 | `13-death-0.3s.jpg` to `13-death-30s.jpg` | A headshot kill, frame by frame: the drop, blood starting at the head (1.5 s), the body fading (2.7 s) and gone (3.6 s) while the pool keeps spreading (8 s), then dried and fading (30 s) |
+| `14-crouch-level.jpg`, `19-look-down-crouch.jpg` | Crouched: nothing of you in view looking ahead; looking down, your knees and belt |
+| `17-climb-grab.jpg`, `15-ledge-top.jpg` | Climbing a 1.7 m ledge: your operator's own arm reaching onto the lip with the hand open and flat, then standing on top |
 
 I looked at every one. The characters read as rigged, textured humans with gear
 and real stride, not as primitives, and nothing slides without moving its legs.
@@ -985,3 +987,357 @@ on respawn; the toggle still wipes and blocks everything. `testFirstPerson`:
 frame time fails the budget as before (21.78 ms mean this run, 17.45 ms last
 round - this number moves by several ms between runs in this browser; the round
 adds one instanced draw call for pools, and blending only while a body fades).
+
+## Crouching, climbing, and a save file
+
+**Crouching folded your legs into your own view.** The crouch pose lowered
+the hips with `hips.position.y -= 0.42 / scale`. But the hips' parent is the
+rig's own "Character" node, which works in centimetres with Z up: that line
+moved the hips about 4 mm sideways. Every crouching operator has had its legs
+fold up under a pelvis that stayed at standing height (0.97 m), feet 0.59 m off
+the ground, knees at 0.89 m - bots included, whose hit capsules follow the
+bones, so a crouched bot was as tall as a standing one. In first person the
+knees sat just under your eyes (1.08 m crouched) and the pants filled the
+bottom of the screen. The drop is now worked out once as "one metre down" in
+that node's space (`_hipDown`), and applied on top of the clip's own hip bob;
+`_hipsFromClip` stops it compounding on frames the far-LOD mixer skips.
+Measured: hips down 0.42 m, feet 0.18 m (0.13 standing), knees 0.61 m below
+your eyes, no creep over two seconds, back to standing height on release.
+
+**Climbing.** In the air and pushing toward a ledge you cannot land on, you
+grab it (`tryMantle` in `src/game/game.js`): a standable top 0.5-1.55 m above
+your feet, at least half a metre deep, with room above you on the way up and
+where you end, inside the arena. The climb takes 0.55-0.8 s - a moment's grab,
+a smooth pull, then over the lip - with the gun stowed and firing, aiming,
+sprinting and melee held off. The hand is the same procedural hand opened flat,
+pinned to the lip: `main.js` hands the viewmodel the lip in the main camera's
+view space with x and y scaled by the ratio of the two FOVs, so it lands where
+the ledge is on screen; its orientation comes from the ledge (palm on the top,
+fingers forward, forearm back over the edge) and it is scaled to arm's-length
+size. Your legs are hidden while you climb.
+
+The first version never showed the hand. From a running jump you meet the
+wall near the top of the jump with your eyes already 0.76 m above the lip, and
+the pull rose fast, so the hand on the lip sat below the bottom of the screen
+(its screen height measured -1.7, -1.1, -0.8, -0.9, -1.1 across the climb).
+The view now dips to keep the lip about 25 degrees under the crosshair (up to
+0.9 rad, eased in and out): -0.65, -0.52, -0.52 through the pull, and it lets
+go below the screen as you go over. Two capture pitfalls cost time here: the
+harness's no-draw stepping also skips the per-frame layer setup, so a posed
+capture showed the camera's layers from before the climb (your own legs).
+
+**The save file.** Headshots were already kept in localStorage - checked by
+banking one, reloading, and reading it back (then restoring the real bank).
+What can lose them is the browser dropping its storage. The profile is now
+mirrored to `save/profile.json` through `POST /_save/profile` on the dev
+server, and `syncProfile()` at boot keeps whichever copy has earned more
+headshots (unlocks are merged). On a static host there is no endpoint; the
+first failed save switches mirroring off and the browser copy carries on. The
+SKINS tab now shows the bank. And the harness was paying into it: its own
+headshot kills during test matches landed in the player's bank. `runAll`,
+`runMaps`, `testSkins` and `testSave` now snapshot both copies and put them
+back.
+
+**Also** the arena clamp was hard-coded to DUSTLINE's 62 x 46 m; TIMBERLINE
+and WHITEOUT are 64 m wide. It now uses each map's own size.
+
+**Verified.** `testCrouch` (the numbers above). `testMantle`: a 1.7 m ledge is
+climbed with the hand showing for 47 frames and you end standing on top;
+jumping without pushing forward does not climb; a 2.6 m wall cannot be climbed.
+`testSave`: a save reaches the file, an emptied browser gets it back at boot,
+and a browser that has earned more wins over an older file. `runAll`: all 20
+pass, frame time included this run (14.71 ms mean, 13.91 median) - earlier
+runs measured 17.45 and 21.78, so read that as run-to-run spread, not a fix.
+
+## Your own arm for the punch, and legs that make sense looking down
+
+**What the video showed.** Looking down you saw what read as a helmet and
+shoulders under you. Reproduced in the game: as well as the legs cut, your
+camera drew one piece of belt gear (on the waist-gear layer), and the legs cut
+started at the hips. From above, the cut pelvis and the pouch made a round,
+helmeted-looking blob. Every piece of gear is now shadow-and-killcam only, and
+the legs cut starts at mid-thigh: thigh triangles are kept only below the
+middle of their height in the bind pose (its longest axis, pointed away from
+the feet). The cut is 20% of the body's triangles.
+
+**The body eases back exactly as far as it needs to.** Looking down still
+showed the open top of the cut. Instead of a fixed 0.24 m, the body now moves
+back until that top edge (0.9 m below your eyes standing, 0.58 m crouched; 5 cm
+ahead of the hips standing, 25 cm crouched) sits under the bottom edge of the
+view, whose angle is the pitch plus half the vertical FOV: nothing looking
+ahead, about 0.45 m at -1.2 rad, about 0.75 m straight down. And it is put back
+right after the draw. Before, the shifted skeleton was what bullets hit until
+the next update, so looking down moved your own hitbox back. Standing, straight
+down, crouched and walking you now see boots, shins or a knee; no hips, no
+pouches.
+
+**The punch is your operator's arm.** The procedural hand looked like a real
+hand, but not like this game's operator; it is gone, with its skin-tone picker.
+The operator mesh is cut once more by skin weight into a left-arm twin (upper
+arm, forearm, hand and fingers) on layer 7, sharing the body's vertices and
+material, so it wears your skin. While you punch or climb, `main.js` poses it
+by IK to where the viewmodel wants the hand, closes the fingers, and draws it
+in a pass of its own after the world, through a camera with the viewmodel's
+62-degree lens: at the main camera's 85 degrees an arm at arm's length looks
+small and far off, which is why the gun has its own camera too. The lights get
+layer 7 so the pass is lit, the sky background is switched off for it so it
+does not paint over the frame, and every bone is put back after the draw.
+
+**Closing a fist on a rig nobody labelled.** Which local axis bends a finger is
+not written down in the model. `_calibrateHand` finds out once: it tries all
+six axes on the middle finger and keeps the one that brings the fingertip
+nearest the root of the thumb, then does the thumb the same way onto the curled
+index. On this rig the fingers close about +Z and the thumb about -Z.
+
+**Three bugs on the way.**
+
+- A name clash: the viewmodel already had `this.hand` (the gun's parent) and
+  the hand pose overwrote it, so the first deploy threw. It is `handPose`.
+- The test read the wrist's screen position as NaN. The browser pane the tests
+  run in was hidden at 0 x 0, so the camera's aspect was 0/0. `resize()` now
+  ignores a 0 x 0 window (a minimised or background window reports the same),
+  the camera starts at 16:9 if the window has no size yet, and the capture tool
+  no longer restores 0 x 0.
+- The shared arm IK steps from the arm's current pose; from the rifle hold it
+  left the guard 15 cm off. The first-person arm has its own two-bone solve:
+  the elbow placed from the two bone lengths and the pole, then each bone aimed
+  at its point. Measured miss: 0.000 m at the guard and at the hit.
+
+**The punch now** roots the arm low at the left of your view (the shoulder is
+never on screen, so moving it costs nothing), raises the fist thumb-up at the
+lower left, and lands it three-quarters over just left of the crosshair (the
+wrist at -0.17, -0.33 on screen), so you see the fist from the side instead of
+end-on behind the forearm. The ledge grab is the same arm with the hand open
+and flat on the lip.
+
+**Verified.** `testFirstPerson`: 35 frames of your arm per punch, the wrist
+just left of and under the crosshair at the hit, the arm cut on its own layer
+and never in the world's pass, the legs cut 20% of the body, no gear in your
+own view. The arm's IK miss at the guard and at the hit: 0.000 m.
+`testMantle`: your arm on the ledge for 47 frames and you end on top; no
+climb without pushing forward; a 2.6 m wall cannot be climbed. `testCrouch`
+and `testSkins` (your arm and legs wear the camo, no shader errors) pass.
+`runAll` on DUSTLINE: 19 of 20. Frame time fails the budget as before: 24.9 ms
+mean this run and 19.0 ms on the run before it, with the same per-frame work -
+the arm and its pass only exist while you punch or climb - so read it as the
+run-to-run spread recorded above. `14-look-down-before.jpg` is the bug as the
+video showed it.
+
+## Hundreds of skins, and the stomach back
+
+**Looking down.** Cutting the body at mid-thigh and easing it back far enough
+to hide the cut got rid of the "helmet", but it left a pair of legs with nothing
+above them, which did not look normal: the version with the hips was right, it
+just needed a bit of stomach. The first-person cut now keeps the hips and the
+stomach (the lowest spine segment) with the legs, 37% of the body, gear still
+hidden. The top of the cut is where the chest begins (the Spine1 joint), and the
+body eases back only until that edge is under the bottom of the view, measured
+off the skeleton every frame so crouching and leaning follow. Looking down you
+see belly and belt at the bottom of the screen, then thighs, knees and boots;
+looking ahead nothing moves at all.
+
+**337 skins.** Twelve finishes in twenty-six colourways (earth, bright, metal,
+neon), priced by the finish's work (4 for camo up to 48 for nebula) times the
+colourway's rarity (x1 earth, x2 bright, x3.5 metal, x4.5 neon), rounded; the
+original fifteen; nine hand-made legendaries from 250 to 500; and one ultimate,
+SINGULARITY, at 750. Ids are stable, so unlocks survive the list growing. Rarity
+follows price (common up to 15, rare up to 60, epic up to 200, legendary above),
+and the SKINS tab filters by it or by what you own, counts each tier, and
+colours each card's edge by it.
+
+**Eight new finishes** in `camo.js`: rosette spots and crystal shards on a
+tileable jittered-cell field, hexagon plates on a lattice sized to repeat
+exactly (six plates across, eight rows down, colours hashed by offset
+coordinates so the seam matches), veined marble, circuit traces between pads,
+damascus layers, a nebula of fbm clouds and hashed stars, and aurora curtains.
+All sixteen finishes tile.
+
+**Skins that move.** The camo shader has a shared clock and three per-skin
+controls: a drift of the projected pattern (MOLTEN CORE's magma runs through
+its cracks), a glow pulse (ELECTRIC), and a hue rotation in YIQ space (PRISM's
+facets and SINGULARITY's galaxy turn through the colours). Every skin material
+holds the same clock uniform object, so animating all of them costs one number
+a frame.
+
+**Hundreds of cards, still fast.** A card's swatch used to be a full 256-pixel
+camo texture, one a frame: fine for 15, seconds for 337. Swatches are now drawn
+straight from the pattern function at 72 pixels wide, only for cards scrolled
+into view (an IntersectionObserver, four a frame), with the first two dozen
+queued when the tab or a filter opens - the observer alone never fired in a
+browser that was not rendering. The full texture is made only for the skin you
+preview or wear.
+
+**Verified.** `testSkins`: 337 skins, all ids unique, five free and 332 paid,
+exactly one at 750 and it is the ultimate; one skin of every finish plus every
+legendary drawn for a frame with no shader errors (26 in all); the kill path
+banks headshots as before; your arm and body wear the skin and no bot does.
+`testFirstPerson` passes with the stomach cut. The test also had to wait for
+the deploy before reading your operator: run on its own, it had read it from
+the menu, where there is none.
+
+**A stall when a body fades, fixed at deploy.** The first corpse to fade
+switched its materials to transparent copies, and the GPU compiled those
+programs in the middle of the fight: 214 to 273 ms frames about 2.3 s after a
+kill, and a 2.8 s worst frame in the performance run. Calling
+`renderer.compile` at deploy created the programs but the frame still stalled
+(214 ms), because the driver finishes the work on first use. Deploy now draws
+one real frame with your operator and one bot half-faded, every layer on and
+culling off, then puts them back. The fade frame dropped to 44 ms. The cost
+moves to the deploy screen: in a fresh tab that one draw takes about 3 s,
+because it also compiles the character programs the first game frame used to.
+
+**Aspect-proof first-person check.** `testFirstPerson` failed only on
+"centred" in the visible browser pane, whose canvas is 968 by 910, not 16:9.
+The fist sits at the same angle either way, but a squarer window puts it
+further out in screen units (-0.28 instead of -0.17). The check now scales the
+horizontal position by the aspect ratio (0.30 in both windows, limit 0.45).
+
+**Suite after this round: 20 of 20.** Run in the visible browser pane, 72 s.
+Frame time with all eight opponents firing, 1920x1080: mean 12.74 ms, median
+12.54, p95 26.98, p99 36.17, worst 51.43 (the run before the deploy warm-up
+had a 2.8 s worst frame). `testSkins`: 337 skins, 5 free and 332 paid, one at
+the top (SINGULARITY, 750), 26 compiled with no errors. `testFirstPerson`:
+arm cut on its own pass, legs 37% of the lower screen, fist centred at aspect
+1.06.
+
+## Sights you can see through, a calmer 8x, and headshots that add up
+
+**Aiming showed black.** Aiming puts the sight's eye point (`opticEye`, from
+`models.js`) on the camera axis, and on every gun but the 8x something solid
+sat on that line. Rays cast from the eye through the screen centre, every gun
+at full aim, found it: the red dot's and the holo's bases were taller than the
+sight line, the ACOG was a closed cylinder, every piece of glass was an opaque
+material, the HAND CANNON's hammer and then its cylinder crossed the line, and
+the pistols had a small cross on the aim point. The 8x only worked because its
+view is the scope overlay, with the gun hidden.
+
+Housings are now open rings (`ring()`: a lathe with no inner wall, so from the
+eye you see the rim and the world through it). Bases sit under the line. The
+glass is a faint see-through tint, and skins never paint it (`skinnable` skips
+transparent materials). The ACOG has nothing inside the cone you look through:
+the bell is open at the back, the turret is gone, the mount is short and sits
+at the eye end. Iron sights are a rear notch and a front post whose tip is
+0.4 mm under the line: on the slide's nose, on a rib at the revolver's muzzle,
+on a tower on the shotgun's heat shield. The revolver's sight line runs over the
+cylinder on a top strap. Once you are aiming, the HUD draws what the sight
+shows (a red dot, the holo ring, the ACOG chevron) and the hip crosshair fades
+out; the shotgun keeps a ghost of its spread ring.
+
+**The 8x went round in circles.** Its sway was one sine per axis at 1.35
+degrees, which at 8x drew the same big ellipse over and over, and only H held
+your breath, which then steadied it slowly as your lungs emptied. Now it is 0.5
+degrees, two sines per axis at unrelated rates, so it drifts instead of looping.
+Holding your breath settles it within a few frames, on Shift (you cannot sprint
+while aiming, so nothing clashes) or H. Running out of breath makes it worse
+until you recover, and crouching steadies it. The scope says SHIFT · HOLD
+BREATH, and its HOLD marker moved down from the top of the overlay, which a 16:9
+screen crops away.
+
+**Headshots that said so but did not add.** Three things said "headshot"
+without banking one. The kill feed marked everyone's headshot kills HS,
+teammates' included. The result screen's HEADSHOTS counted head hits that did
+not kill. A shotgun blast whose head pellet was not the one that finished the
+target was not a headshot kill. And where browser storage would not keep the
+profile, every read came back empty, so each kill said "+1 BANKED (1)". Now
+every headshot kill on your side banks one, yours and your teammates', and the
+kill feed tag reads HS +1. Any pellet on the head makes the blast a headshot
+kill. The result screen shows HEADSHOT KILLS and the team's share, and the
+profile is also held in memory.
+
+**Verified.** `testSights` (new): with every gun at full aim, rays from the eye
+through the screen centre, and rings 1 and 2.5 degrees out, reach the world
+past the gun on all ten (iron sights may keep the front post below the centre).
+No glass is solid; the red dot shows once you aim and the hip cross goes; the
+8x drifts at most 0.64 degrees, and 0.061 within 0.3 s of holding Shift, which
+neither sprints nor drops your aim. `testHeadshotBank` (new): your headshot
+kill and a teammate's each bank one and read HS +1 in the kill feed; a body
+kill and an enemy's headshot bank nothing; with storage blocked, two more kills
+still bank two; the results show HEADSHOT KILLS and TEAM +2; the player's real
+bank is put back afterwards. Suite: 22 of 22.
+
+Four older tests had to change. Crouch and mantle read your operator before
+redeploying, and the bank test now ends a match, so they read the old one.
+Skins emptied storage to fake an empty bank, and now empties the in-memory copy
+too. Control directions stood the bots down only after 30 settling frames, so a
+bot could kill you before the probes began; it failed once that way. The
+capture tool now turns CSS animations off in its snapshot, which was rasterised
+at their first frame and showed an empty kill feed.
+
+Frame time in the suite: mean 15.2 ms, median 11.3, p99 34.1, with one 861 ms
+frame. Two reruns on the warm page compiled no new shader programs (77 before
+and after) and gave 8.9 ms mean, worst 14.8 and 25.0 ms, so that frame was the
+host, not the game. Screenshots: `20-ads-reddot`, `20-ads-holo`, `20-ads-acog`,
+`20-ads-irons`, `20-ads-revolver`, `20-scope-8x`, `20-killfeed`, `20-results`.
+
+## Choppy on a laptop: freezes, a slow DEPLOY, and a resolution that keeps up
+
+**Measured first.** This machine has an Intel Iris Xe (integrated graphics),
+8 threads and 8 GB, running the game in Chrome through the Claude app. Walking
+in a match at the pane's size ran at 27 fps, with a 1.9 to 2.3 s freeze in every
+4-second sample; at 1920x1080 it ran at 18 fps. DEPLOY froze the screen for 2.2
+to 4 s.
+
+**The freezes were shaders compiling mid-fight.** 25 programs existed after
+DEPLOY and 85 a minute later. Copies of the same material differed only in the
+point-light count (4, 5, 6, 7). The effects' pool of four muzzle-flash and
+explosion lights was hidden when idle, and three.js builds every lit shader, and
+every shadow-depth shader, for the number of visible lights. So each new count
+recompiled everything on screen, a few hundred ms per program on this driver.
+The viewmodel's flash light did the same to your gun on the first shot. The
+lights now stay visible and go dark when idle, so the count never changes. A
+12-second fight (walking, shooting, a punch, a kill) compiled nothing and had
+no frame over 80 ms: 59 fps at the pane's size, 42 at 1080p.
+
+**DEPLOY.** The warm-up was one render of everything, which compiled programs
+one after another on the main thread. Now they go to the driver together
+(`compileAsync`, KHR_parallel_shader_compile) while the game holds behind a
+DEPLOYING screen. The menu starts the same work 0.3 s after it appears, with
+stand-in operators (yours in your skin, and a bot), every gun, the killstreak
+aircraft and every effect. The stand-ins are kept, because disposing their
+materials would release the programs. DEPLOY went from 2.2 to 4 s frozen to
+0.8 to 0.9 s before the first frame, or 2.9 s with the menu warm-up off
+(`?noprewarm`, kept for comparison). It costs nothing in play: 36.3 fps with it
+and 32.5 without, in the same conditions.
+
+**Resolution that keeps up.** At 1080p this GPU managed 42 fps, and 58 at 80%.
+While a match runs slower than about 55 fps the drawing buffer shrinks in 10%
+steps, down to 60%, and every DEPLOY starts back at full. The HUD is DOM and
+stays sharp. The frame-time test and the capture tool pin the pixel ratio at 1
+so it cannot leak into their numbers.
+
+**What is left is the machine.** In the later runs, with the game paused and
+drawing nothing, the browser itself managed only 48 to 54 fps, with 5% of its
+frames over 33 ms: something else was using the machine. The game then measured
+32 to 36 fps where the same scene had run at 59 earlier. A frame broke down as
+5.5 to 6 ms of game logic, 10 to 12 ms of rendering and 0.5 ms of HUD. A second
+copy of the game in another tab or window halves both copies.
+
+**Verified, with a caveat.** Suite: 21 of 22. The frame-time test failed at a
+24.3 ms mean (1080p, 55 draw calls), and the whole run took 252 s instead of
+70. The save file showed why: a skin was bought in another window at 06:31, in
+the middle of the run, so the game was running twice on one integrated GPU.
+Earlier in the session the same test passed at 9 to 15 ms. The DEPLOY wait now
+has a time limit (`settle`: 6 s at DEPLOY, 15 s in the menu). `compileAsync`
+resolves only when every program reports ready, and one whose material is
+disposed meanwhile (a match restarted mid-compile) never would. Only the latest
+DEPLOY ends the hold.
+
+**Rerun with the machine quiet** (the idle browser at a flat 60 fps). DEPLOY:
+0.19 s to the first frame, after a menu warm-up of 0.19 to 0.22 s. A 12-second
+fight: 59.3 fps and one 113 ms frame, where two programs still compiled; that is
+the only mid-match compile left, and which two is not yet known. At the pane's
+size: 58.9 fps. At 1920x1080 in a real window: 44.6 fps at full resolution and
+49.9 at 90%. With the target raised from about 50 to about 55 fps, the buffer
+steps to 90% and then 80%. Suite: 21 of 22, with the frame-time test at a
+25.8 ms mean. That test now reads 19 to 27 ms whether the effect lights stay on
+or hide when idle (alternated in one page, two runs each way, in two separate
+pages), against 9 to 15 ms early in the session with the same view. The
+laptop's own state after an hour of GPU tests moves it more than any change
+here, so only A/B runs within one page are comparable.
+
+**The harness had been banking headshots.** Team headshots now count, and a
+test tab left in a live match kept its bots fighting between runs, so their
+headshots went into the player's real save (one, at 06:33, is certain). A page
+that loads `tools/qa-browser.js` now banks nothing outside a `guardProfile()`
+section (`window.__qaNoBank`), and the test tab is paused or closed when a
+session ends.

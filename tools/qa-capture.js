@@ -56,7 +56,9 @@ async function domToImage(el, w, h) {
     `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">` +
     `<foreignObject x="0" y="0" width="${w}" height="${h}">` +
     `<div xmlns="http://www.w3.org/1999/xhtml" style="width:${w}px;height:${h}px;position:relative;margin:0">` +
-    `<style>/*<![CDATA[*/${css}/*]]>*/</style>${body}</div>` +
+    // animations off: the image is rasterised at their first frame, where the kill feed and banners are still invisible
+    `<style>/*<![CDATA[*/${css}
+*{animation:none!important;transition:none!important}/*]]>*/</style>${body}</div>` +
     `</foreignObject></svg>`;
 
   const url = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
@@ -138,6 +140,7 @@ export async function capture(name, opts = {}) {
 /** Put the renderer at a fixed capture resolution. */
 export function setCaptureSize(w, h) {
   const R = window.__renderer, g = window.__game;
+  R.setPixelRatio(1);                     // exactly w x h, whatever the game's automatic resolution was
   R.setSize(w, h, false);
   g.camera.aspect = w / h;
   g.camera.updateProjectionMatrix();
@@ -153,5 +156,6 @@ export function setCaptureSize(w, h) {
  * run before it had measured the window, and the two looked like a regression.
  */
 export function restoreCaptureSize() {
-  return setCaptureSize(window.innerWidth, window.innerHeight);
+  // a hidden browser pane reports 0 x 0; restoring that made the camera's aspect NaN
+  return setCaptureSize(window.innerWidth || 1280, window.innerHeight || 720);
 }
